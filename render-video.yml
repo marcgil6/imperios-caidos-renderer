@@ -1,0 +1,125 @@
+name: Render Video — IMPERIOS CAÍDOS
+
+on:
+  repository_dispatch:
+    types: [render-video]
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check ffmpeg
+        run: ffmpeg -version | head -1
+
+      - name: Setup directories
+        run: mkdir -p /tmp/render/audio /tmp/render/assets
+
+      - name: Download audio chunks
+        run: |
+          AUDIO_URLS='${{ toJSON(github.event.client_payload.audio_urls) }}'
+          INDEX=0
+          echo "$AUDIO_URLS" | jq -r '.[]' | while IFS= read -r url; do
+            INDEX=$((INDEX + 1))
+            PADDED=$(printf "%03d" $INDEX)
+            echo "Downloading audio $PADDED: $url"
+            curl -fsSL "$url" -o "/tmp/render/audio/${PADDED}_chunk.mp3" \
+              --retry 3 --max-time 120 || echo "WARN: failed chunk $PADDED"
+          done
+
+      - name: Download music
+        run: |
+          MUSIC_URL='${{ github.event.client_payload.music_url }}'
+          if [ -n "$MUSIC_URL" ]; then
+            curl -fsSL "$MUSIC_URL" -o /tmp/render/music.mp3 --retry 3 --max-time 120
+          else
+            ffmpeg -f lavfi -i "anullsrc=r=44100:cl=stereo" -t 5 /tmp/render/music.mp3 2>/dev/null
+          fi
+
+      - name: Download visual assets
+        run: |
+          ASSETS='${{ toJSON(github.event.client_payload.assets) }}'
+          echo "$ASSETS" | jq -c '.[]' | while IFS= read -r asset; do
+            url=$(echo "$asset" | jq -r '.url')
+            filename=$(echo "$asset" | jq -r '.filename')
+            echo "Downloading: $filename"
+            curl -fsSL "$url" -o "/tmp/render/assets/${filename}" \
+              --retry 3 --max-time 90 \
+              -H "User-Agent: Mozilla/5.0" || {
+              echo "WARN: failed $filename — creating black placeholder"
+              ffmpeg -f lavfi -i "color=black:size=1920x1080:duration=1" \
+                -frames:v 1 "/tmp/render/assets/${filename}" -y 2>/dev/null || true
+            }
+          done
+
+      - name: Concatenate audio chunks
+        run: |
+          ls /tmp/render/audio/*.mp3 2>/dev/null | sort | \
+            awk '{print "file \047" $0 "\047"}' > /tmp/render/audio_list.txt
+          echo "Audio list:"
+          cat /tmp/render/audio_list.txt
+          ffmpeg -y -f concat -safe 0 -i /tmp/render/audio_list.txt \
+            -acodec copy /tmp/render/narration.mp3
+
+      - name: Build video input list
+        run: |
+          ASSETS='${{ toJSON(github.event.client_payload.assets) }}'
+          echo "$ASSETS" | jq -r \
+            '.[] | "file '/tmp/render/assets/" + .filename + "'\nduration " + (.duracion_s | tostring)' \
+            > /tmp/render/input_list.txt
+          LAST=$(echo "$ASSETS" | jq -r '.[-1].filename')
+          echo "file '/tmp/render/assets/${LAST}'" >> /tmp/render/input_list.txt
+          echo "Input list:"
+          cat /tmp/render/input_list.txt
+
+      - name: Render video with ffmpeg
+        run: |
+          ffmpeg -y \
+            -f concat -safe 0 -i /tmp/render/input_list.txt \
+            -i /tmp/render/narration.mp3 \
+            -i /tmp/render/music.mp3 \
+            -filter_complex \
+              "[0:v]scale=1920:1080:force_original_aspect_ratio=increase,\
+              crop=1920:1080,setsar=1,fps=25[vid];\
+              [1:a]volume=1.0[narr];\
+              [2:a]volume=0.12,aloop=loop=-1:size=2147483647[mus];\
+              [narr][mus]amix=inputs=2:duration=first:dropout_transition=3[aud]" \
+            -map "[vid]" -map "[aud]" \
+            -c:v libx264 -preset medium -crf 28 -pix_fmt yuv420p \
+            -c:a aac -b:a 192k \
+            -movflags +faststart \
+            /tmp/render/output.mp4
+          echo "Render complete. Size: $(du -h /tmp/render/output.mp4 | cut -f1)"
+
+      - name: Upload to transfer.sh
+        id: upload
+        run: |
+          DYNASTIA_ID='${{ github.event.client_payload.dynastia_id }}'
+          URL=$(curl -fsSL \
+            --upload-file /tmp/render/output.mp4 \
+            "https://transfer.sh/${DYNASTIA_ID}.mp4" \
+            --max-time 600 --retry 2)
+          echo "mp4_url=${URL}" >> $GITHUB_OUTPUT
+          echo "Uploaded: $URL"
+
+      - name: Save result to repo
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          DYNASTIA_ID='${{ github.event.client_payload.dynastia_id }}'
+          MP4_URL='${{ steps.upload.outputs.mp4_url }}'
+          TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          mkdir -p renders
+          printf '{"dynastia_id":"%s","mp4_url":"%s","run_id":"%s","timestamp":"%s","status":"success"}' \
+            "$DYNASTIA_ID" "$MP4_URL" "${{ github.run_id }}" "$TS" \
+            > "renders/${DYNASTIA_ID}.json"
+          git config user.email "actions@github.com"
+          git config user.name "GitHub Actions"
+          git add "renders/${DYNASTIA_ID}.json"
+          git commit -m "render: ${DYNASTIA_ID}" || echo "nothing to commit"
+          git push
