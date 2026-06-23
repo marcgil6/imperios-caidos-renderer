@@ -8,8 +8,9 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY music/ /app/music/
 COPY render.py .
+COPY music/ ./music/
+RUN ls -la /app/music/ && test -f /app/music/music_01_uprising.mp3
 
 EXPOSE 5000
 

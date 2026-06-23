@@ -26,7 +26,17 @@ logging.basicConfig(
 )
 log = logging.getLogger("render")
 
-MUSIC_DIR = Path("/app/music")
+def _find_music_dir():
+    candidates = [
+        Path("/app/music"),
+        Path(__file__).resolve().parent / "music",
+    ]
+    for d in candidates:
+        if (d / "music_01_uprising.mp3").exists():
+            return d
+    return candidates[0]
+
+MUSIC_DIR = _find_music_dir()
 MUSIC = {
     "uprising": MUSIC_DIR / "music_01_uprising.mp3",
     "the_long_dark": MUSIC_DIR / "music_02_the_long_dark.mp3",
