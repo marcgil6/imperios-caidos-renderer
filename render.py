@@ -248,6 +248,7 @@ def _ken_burns(image_path, output_path, duration):
     zf = ZOOM_TOTAL / frames
 
     vf = (
+        "hflip,"
         "scale=1920:1080:force_original_aspect_ratio=increase,"
         "crop=1920:1080,setsar=1,"
         f"zoompan=z='min(zoom+{zf:.10f},1.5)'"
