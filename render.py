@@ -26,6 +26,25 @@ logging.basicConfig(
 )
 log = logging.getLogger("render")
 
+
+def _check_google_env():
+    raw = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON", "")
+    length = len(raw)
+    preview = repr(raw[:20]) if raw else "(empty)"
+    log.info("STARTUP — GOOGLE_SERVICE_ACCOUNT_JSON: len=%d, preview=%s", length, preview)
+    if not raw:
+        log.warning("STARTUP — variable is empty or not set!")
+        return
+    try:
+        parsed = json.loads(raw)
+        log.info("STARTUP — json.loads() OK: type=%s, project_id=%s, client_email=%s",
+                 parsed.get("type"), parsed.get("project_id"), parsed.get("client_email"))
+    except Exception as e:
+        log.error("STARTUP — json.loads() FAILED: %s", e)
+
+_check_google_env()
+
+
 def _find_music_dir():
     candidates = [
         Path("/app/music"),
@@ -62,6 +81,28 @@ def health():
         "ffmpeg": ffmpeg_ok,
         "music": music_ok,
     })
+
+
+@app.route("/debug-env", methods=["GET"])
+def debug_env():
+    raw = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON", "")
+    result = {
+        "len": len(raw),
+        "empty": len(raw) == 0,
+        "preview_20": repr(raw[:20]) if raw else "(empty)",
+    }
+    if raw:
+        try:
+            parsed = json.loads(raw)
+            result["json_ok"] = True
+            result["type"] = parsed.get("type")
+            result["project_id"] = parsed.get("project_id")
+            result["client_email"] = parsed.get("client_email")
+            result["private_key_starts"] = parsed.get("private_key", "")[:40]
+        except Exception as e:
+            result["json_ok"] = False
+            result["json_error"] = str(e)
+    return jsonify(result)
 
 
 @app.route("/render", methods=["POST"])
