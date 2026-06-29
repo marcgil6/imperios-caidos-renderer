@@ -3,6 +3,7 @@ IMPERIOS CAIDOS - Video Render Service
 Ken Burns + crossfade + audio mix via FFmpeg.
 Uploads result to Google Drive, returns URL.
 """
+import base64
 import io
 import json
 import os
@@ -27,6 +28,20 @@ logging.basicConfig(
 log = logging.getLogger("render")
 
 
+def _parse_creds(raw):
+    """Parse service account JSON — accepts raw JSON or base64-encoded JSON."""
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        pass
+    try:
+        return json.loads(base64.b64decode(raw.strip()).decode())
+    except Exception:
+        return None
+
+
 def _check_google_env():
     raw = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON", "")
     length = len(raw)
@@ -35,12 +50,12 @@ def _check_google_env():
     if not raw:
         log.warning("STARTUP — variable is empty or not set!")
         return
-    try:
-        parsed = json.loads(raw)
-        log.info("STARTUP — json.loads() OK: type=%s, project_id=%s, client_email=%s",
-                 parsed.get("type"), parsed.get("project_id"), parsed.get("client_email"))
-    except Exception as e:
-        log.error("STARTUP — json.loads() FAILED: %s", e)
+    info = _parse_creds(raw)
+    if info:
+        log.info("STARTUP — creds OK: type=%s, project_id=%s, client_email=%s",
+                 info.get("type"), info.get("project_id"), info.get("client_email"))
+    else:
+        log.error("STARTUP — creds parse FAILED")
 
 _check_google_env()
 
@@ -131,14 +146,15 @@ def render():
 
     music_key = data.get("music_track", "uprising")
     music_path = str(MUSIC.get(music_key, MUSIC["uprising"]))
-    dynasty = data.get("dynasty_name", "video")
+    dynasty = data.get("dynasty_name", data.get("output_filename", "video"))
     folder_id = data.get("drive_folder_id")
+    google_creds = data.get("google_credentials_json")
 
     work = tempfile.mkdtemp(prefix="render_")
     log.info("Render started: dynasty=%s, images=%d, music=%s", dynasty, len(images), music_key)
 
     try:
-        drive = _get_drive_service()
+        drive = _get_drive_service(creds_override=google_creds)
 
         # 1 ── Download narration
         narr_path = os.path.join(work, "narration.mp3")
@@ -229,16 +245,20 @@ def render():
 # ── Google Drive ───────────────────────────────────────────
 
 
-def _get_drive_service():
-    creds_json = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON")
-    if not creds_json:
+def _get_drive_service(creds_override=None):
+    """Build Drive service. Accepts raw JSON, base64-encoded JSON, or parsed dict."""
+    raw = creds_override or os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON", "")
+    if isinstance(raw, dict):
+        info = raw
+    else:
+        info = _parse_creds(raw)
+    if not info:
         raise ValueError(
-            "GOOGLE_SERVICE_ACCOUNT_JSON env var not set. "
-            "Create a service account in Google Cloud Console, "
-            "download the JSON key, and set it as this env var."
+            "Google credentials not available. Set GOOGLE_SERVICE_ACCOUNT_JSON env var "
+            "(raw JSON or base64-encoded) or pass google_credentials_json in the request body."
         )
     creds = service_account.Credentials.from_service_account_info(
-        json.loads(creds_json),
+        info,
         scopes=["https://www.googleapis.com/auth/drive"],
     )
     return build("drive", "v3", credentials=creds, cache_discovery=False)
