@@ -321,7 +321,7 @@ def _ken_burns(image_path, output_path, duration):
              output_path], timeout=180)
 
 
-def _join_clips(clips, output_path, work_dir):
+def _join_clips(clips, output_path, work_dir, _level=0):
     """Join clips with xfade crossfade, batched for large counts."""
     if len(clips) == 1:
         shutil.copy(clips[0]["path"], output_path)
@@ -335,7 +335,7 @@ def _join_clips(clips, output_path, work_dir):
                for i in range(0, len(clips), XFADE_BATCH)]
     merged = []
     for j, batch in enumerate(batches):
-        bp = os.path.join(work_dir, f"batch_{j:03d}.mp4")
+        bp = os.path.join(work_dir, f"batch_L{_level}_{j:03d}.mp4")
         if len(batch) == 1:
             shutil.copy(batch[0]["path"], bp)
             dur = batch[0]["duration"]
@@ -344,7 +344,7 @@ def _join_clips(clips, output_path, work_dir):
             dur = sum(c["duration"] for c in batch) - (len(batch) - 1) * CROSSFADE_SEC
         merged.append({"path": bp, "duration": dur})
 
-    _join_clips(merged, output_path, work_dir)
+    _join_clips(merged, output_path, work_dir, _level=_level + 1)
 
 
 def _xfade_batch(clips, output_path):
