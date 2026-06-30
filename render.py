@@ -233,6 +233,16 @@ def render():
                  (duration_sec or 0) / 60,
                  file_size / 1024 / 1024)
 
+        # QC ── Verify video duration matches narration (catches clip-calc failures)
+        if narr_dur and duration_sec:
+            drift = abs(duration_sec - narr_dur)
+            log.info("QC duration: video=%.1fs narration=%.1fs drift=%.1fs", duration_sec, narr_dur, drift)
+            if drift > 5:
+                raise RuntimeError(
+                    f"QC FAILED: video {duration_sec:.1f}s vs narration {narr_dur:.1f}s "
+                    f"(drift {drift:.1f}s > 5s). Audio would be cut or video would freeze."
+                )
+
         # 6 ── Save to renders dir for n8n to download and upload to Drive
         token = str(uuid.uuid4())
         persistent = RENDERS_DIR / f"{token}.mp4"
@@ -245,6 +255,8 @@ def render():
             "filename": out_name,
             "duration_sec": duration_sec,
             "duration_min": round(duration_sec / 60, 1) if duration_sec else None,
+            "narration_duration_sec": narr_dur,
+            "narration_duration_min": round(narr_dur / 60, 1) if narr_dur else None,
             "size_bytes": file_size,
             "images_count": len(img_list),
             "music_track": music_key,
