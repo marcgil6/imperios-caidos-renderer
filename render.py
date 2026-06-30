@@ -7,18 +7,20 @@ import base64
 import io
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
 import time
+import uuid
 import logging
 from pathlib import Path
 
 import requests as http_requests
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_file
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
-from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload
+from googleapiclient.http import MediaIoBaseDownload
 
 app = Flask(__name__)
 logging.basicConfig(
@@ -58,6 +60,9 @@ def _check_google_env():
         log.error("STARTUP — creds parse FAILED")
 
 _check_google_env()
+
+RENDERS_DIR = Path("/app/renders")
+RENDERS_DIR.mkdir(exist_ok=True)
 
 
 def _find_music_dir():
@@ -217,15 +222,15 @@ def render():
                  (duration_sec or 0) / 60,
                  file_size / 1024 / 1024)
 
-        # 6 ── Upload to Drive
-        log.info("Uploading to Google Drive (folder=%s)...", folder_id)
-        result = _upload_drive(drive, out_path, out_name, folder_id)
-        log.info("Upload done: %s", result["url"])
+        # 6 ── Save to renders dir for n8n to download and upload to Drive
+        token = str(uuid.uuid4())
+        persistent = RENDERS_DIR / f"{token}.mp4"
+        shutil.move(out_path, str(persistent))
+        log.info("Render saved as token=%s (%s)", token, persistent.name)
 
         return jsonify({
             "success": True,
-            "file_id": result["file_id"],
-            "url": result["url"],
+            "download_token": token,
             "filename": out_name,
             "duration_sec": duration_sec,
             "duration_min": round(duration_sec / 60, 1) if duration_sec else None,
@@ -240,6 +245,18 @@ def render():
 
     finally:
         shutil.rmtree(work, ignore_errors=True)
+
+
+@app.route("/download/<token>", methods=["GET"])
+def download_render(token):
+    if not re.match(r'^[0-9a-f\-]+$', token):
+        return jsonify({"error": "invalid token"}), 400
+    path = RENDERS_DIR / f"{token}.mp4"
+    if not path.exists():
+        return jsonify({"error": "render not found"}), 404
+    log.info("Serving render token=%s", token)
+    return send_file(str(path), mimetype="video/mp4", as_attachment=True,
+                     download_name=f"{token}.mp4")
 
 
 # ── Google Drive ───────────────────────────────────────────
