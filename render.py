@@ -5,6 +5,7 @@ Uploads result to Google Drive, returns URL.
 """
 import base64
 import io
+import itertools
 import json
 import os
 import re
@@ -172,16 +173,8 @@ def render():
         else:
             return jsonify({"success": False, "error": "narration_file_id or narration_url required"}), 400
 
-        # Adapt clip durations to narration length so video always matches audio
         narr_dur = _probe_duration(narr_path)
-        n_clips = len(images)
-        if narr_dur and n_clips > 0:
-            crossfades_total = (n_clips - 1) * CROSSFADE_SEC
-            per_clip = (narr_dur + crossfades_total + 15) / n_clips
-            per_clip = max(per_clip, 5.0)
-            log.info("Narration: %.1fs → %d clips × %.2fs each", narr_dur, n_clips, per_clip)
-            for img in images:
-                img["duration"] = per_clip
+        log.info("Narration: %.1fs (%.1f min)", narr_dur or 0, (narr_dur or 0) / 60)
 
         # 2 ── Download images
         log.info("Downloading %d images...", len(images))
@@ -199,7 +192,28 @@ def render():
             img_list.append({
                 "path": path,
                 "duration": float(img.get("duration", DEFAULT_DURATION)),
+                "source_filename": img.get("filename", ""),
             })
+
+        # Loop ATM images (then all images) until video covers full narration duration
+        if narr_dur and img_list:
+            total_vid = (sum(im["duration"] for im in img_list)
+                         - max(len(img_list) - 1, 0) * CROSSFADE_SEC)
+            if total_vid < narr_dur:
+                gap = narr_dur - total_vid
+                log.info("Video %.1fs < narration %.1fs (gap %.1fs) — looping images",
+                         total_vid, narr_dur, gap)
+                atm_pool = [im for im in img_list if "ATM_" in im["source_filename"]]
+                pool = atm_pool if atm_pool else img_list
+                cycle = itertools.cycle(pool)
+                extra = 0
+                while total_vid < narr_dur:
+                    im_copy = dict(next(cycle))
+                    img_list.append(im_copy)
+                    total_vid += im_copy["duration"] - CROSSFADE_SEC
+                    extra += 1
+                log.info("Looped %d extra clips → %d total, %.1fs video",
+                         extra, len(img_list), total_vid)
 
         if not img_list:
             return jsonify({"success": False, "error": "No images downloaded successfully"}), 400
