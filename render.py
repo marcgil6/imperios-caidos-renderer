@@ -172,6 +172,17 @@ def render():
         else:
             return jsonify({"success": False, "error": "narration_file_id or narration_url required"}), 400
 
+        # Adapt clip durations to narration length so video always matches audio
+        narr_dur = _probe_duration(narr_path)
+        n_clips = len(images)
+        if narr_dur and n_clips > 0:
+            crossfades_total = (n_clips - 1) * CROSSFADE_SEC
+            per_clip = (narr_dur + crossfades_total + 15) / n_clips
+            per_clip = max(per_clip, 5.0)
+            log.info("Narration: %.1fs → %d clips × %.2fs each", narr_dur, n_clips, per_clip)
+            for img in images:
+                img["duration"] = per_clip
+
         # 2 ── Download images
         log.info("Downloading %d images...", len(images))
         img_list = []
