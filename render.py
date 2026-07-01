@@ -71,8 +71,14 @@ def _load_whisper():
     global WHISPER_MODEL
     try:
         from faster_whisper import WhisperModel
-        WHISPER_MODEL = WhisperModel("base", device="cpu", compute_type="int8")
-        log.info("Whisper base model loaded.")
+        for ct in ("int8", "float32"):
+            try:
+                WHISPER_MODEL = WhisperModel("base", device="cpu", compute_type=ct)
+                log.info("Whisper base model loaded (compute_type=%s).", ct)
+                return
+            except Exception as e:
+                log.warning("Whisper compute_type=%s failed: %s — trying next", ct, e)
+        log.error("Whisper: all compute_type options failed — subtitles disabled.")
     except Exception as e:
         log.warning("Whisper could not be loaded — subtitles disabled: %s", e)
 
@@ -137,6 +143,25 @@ def debug_env():
             result["json_ok"] = False
             result["json_error"] = str(e)
     return jsonify(result)
+
+
+@app.route("/test-subs", methods=["GET"])
+def test_subs():
+    """Quick diagnostic: reports Whisper load status and libass availability."""
+    import subprocess as sp
+    whisper_ok = WHISPER_MODEL is not None
+    # Check if FFmpeg has libass (needed for ass filter)
+    r = sp.run(["ffmpeg", "-filters"], capture_output=True, text=True)
+    libass_ok = "ass" in r.stdout
+    # Check Liberation Sans font is available
+    fc = sp.run(["fc-list", ":family=Liberation Sans"], capture_output=True, text=True)
+    font_ok = "Liberation" in fc.stdout
+    return jsonify({
+        "whisper_loaded": whisper_ok,
+        "libass_available": libass_ok,
+        "liberation_sans_found": font_ok,
+        "fc_list_output": fc.stdout[:500],
+    })
 
 
 @app.route("/render", methods=["POST"])
