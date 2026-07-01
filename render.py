@@ -64,6 +64,20 @@ _check_google_env()
 RENDERS_DIR = Path("/app/renders")
 RENDERS_DIR.mkdir(exist_ok=True)
 
+WHISPER_MODEL = None
+
+
+def _load_whisper():
+    global WHISPER_MODEL
+    try:
+        from faster_whisper import WhisperModel
+        WHISPER_MODEL = WhisperModel("base", device="cpu", compute_type="int8")
+        log.info("Whisper base model loaded.")
+    except Exception as e:
+        log.warning("Whisper could not be loaded — subtitles disabled: %s", e)
+
+_load_whisper()
+
 
 def _find_music_dir():
     candidates = [
@@ -224,16 +238,10 @@ def render():
 
         # 5 ── Mix audio (narration + looped music at -20dB)
         log.info("Mixing audio...")
-        out_name = f"{dynasty}_{int(time.time())}.mp4"
-        out_path = os.path.join(work, out_name)
-        _mix_audio(joined_path, narr_path, music_path, out_path)
+        mixed_path = os.path.join(work, "mixed.mp4")
+        _mix_audio(joined_path, narr_path, music_path, mixed_path)
 
-        duration_sec = _probe_duration(out_path)
-        file_size = os.path.getsize(out_path)
-        log.info("Render complete: %s (%.1f min, %.1f MB)",
-                 out_name,
-                 (duration_sec or 0) / 60,
-                 file_size / 1024 / 1024)
+        duration_sec = _probe_duration(mixed_path)
 
         # QC ── Verify video duration matches narration (catches clip-calc failures)
         if narr_dur and duration_sec:
@@ -245,7 +253,26 @@ def render():
                     f"(drift {drift:.1f}s > 5s). Audio would be cut or video would freeze."
                 )
 
-        # 6 ── Save to renders dir for n8n to download and upload to Drive
+        # 6 ── Burn subtitles
+        out_name = f"{dynasty}_{int(time.time())}.mp4"
+        out_path = os.path.join(work, out_name)
+        if WHISPER_MODEL is not None:
+            try:
+                ass_path = _transcribe_to_ass(narr_path, work)
+                _burn_subtitles(mixed_path, ass_path, out_path)
+                log.info("Subtitles burned successfully.")
+            except Exception as e:
+                log.warning("Subtitle burn failed (non-fatal): %s — using video without subs", e)
+                shutil.copy(mixed_path, out_path)
+        else:
+            log.warning("Whisper not available — skipping subtitles.")
+            shutil.copy(mixed_path, out_path)
+
+        file_size = os.path.getsize(out_path)
+        log.info("Render complete: %s (%.1f min, %.1f MB)",
+                 out_name, (duration_sec or 0) / 60, file_size / 1024 / 1024)
+
+        # 7 ── Save to renders dir for n8n to download and upload to Drive
         token = str(uuid.uuid4())
         persistent = RENDERS_DIR / f"{token}.mp4"
         shutil.move(out_path, str(persistent))
@@ -340,6 +367,73 @@ def _download_url(url, dest):
     with open(dest, "wb") as f:
         for chunk in r.iter_content(8192):
             f.write(chunk)
+
+
+# ── Subtitles ──────────────────────────────────────────────
+
+
+def _transcribe_to_ass(narr_path, work):
+    """Transcribe narration with Whisper and write an ASS subtitle file."""
+    log.info("Transcribing narration (~base model, CPU)...")
+    segments, info = WHISPER_MODEL.transcribe(
+        narr_path, language="es", beam_size=1, best_of=1,
+        vad_filter=True,
+    )
+    log.info("Whisper: lang=%s (%.0f%%)", info.language, info.language_probability * 100)
+
+    def _tc(t):
+        h = int(t // 3600)
+        m = int((t % 3600) // 60)
+        s = int(t % 60)
+        cs = int(round((t % 1) * 100))
+        return f"{h}:{m:02d}:{s:02d}.{cs:02d}"
+
+    header = (
+        "[Script Info]\n"
+        "ScriptType: v4.00+\n"
+        "PlayResX: 1920\n"
+        "PlayResY: 1080\n"
+        "WrapStyle: 1\n"
+        "\n"
+        "[V4+ Styles]\n"
+        "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, "
+        "OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, "
+        "ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, "
+        "Alignment, MarginL, MarginR, MarginV, Encoding\n"
+        # White bold text — 4px black outline — bottom centre — 80px margin
+        "Style: Default,Liberation Sans,74,&H00FFFFFF,&H000000FF,"
+        "&H00000000,&H00000000,-1,0,0,0,100,100,0,0,1,4,1,2,80,80,80,1\n"
+        "\n"
+        "[Events]\n"
+        "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
+    )
+
+    dialogues = []
+    for seg in segments:
+        text = seg.text.strip()
+        if not text:
+            continue
+        dialogues.append(
+            f"Dialogue: 0,{_tc(seg.start)},{_tc(seg.end)},Default,,0,0,0,,{text}"
+        )
+
+    ass_path = os.path.join(work, "subtitles.ass")
+    with open(ass_path, "w", encoding="utf-8") as f:
+        f.write(header + "\n".join(dialogues))
+
+    log.info("ASS written: %d segments → %s", len(dialogues), ass_path)
+    return ass_path
+
+
+def _burn_subtitles(video_path, ass_path, output_path):
+    """Re-encode video with ASS subtitles burned in."""
+    _ffmpeg([
+        "-i", video_path,
+        "-vf", f"ass={ass_path}",
+        "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+        "-c:a", "copy",
+        output_path,
+    ], timeout=1200)
 
 
 # ── FFmpeg ─────────────────────────────────────────────────

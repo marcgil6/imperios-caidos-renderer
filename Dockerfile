@@ -1,12 +1,16 @@
 FROM python:3.11-slim
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ffmpeg \
+    && apt-get install -y --no-install-recommends ffmpeg fonts-liberation fontconfig \
+    && fc-cache -fv \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
+
+# Pre-download Whisper base model at build time so first render isn't slow
+RUN python -c "from faster_whisper import WhisperModel; WhisperModel('base', device='cpu', compute_type='int8'); print('Whisper base model ready')"
 
 COPY render.py .
 COPY music/ ./music/
