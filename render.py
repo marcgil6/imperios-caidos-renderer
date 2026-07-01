@@ -359,7 +359,7 @@ def _ken_burns(image_path, output_path, duration):
         f":d={frames}:s=1920x1080:fps={FPS}"
     )
     _ffmpeg(["-i", image_path, "-vf", vf,
-             "-c:v", "libx264", "-preset", "fast", "-pix_fmt", "yuv420p",
+             "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
              output_path], timeout=180)
 
 
@@ -414,7 +414,7 @@ def _xfade_batch(clips, output_path):
     _ffmpeg(inputs + [
         "-filter_complex", fc,
         "-map", "[vout]",
-        "-c:v", "libx264", "-preset", "fast", "-pix_fmt", "yuv420p",
+        "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
         output_path,
     ], timeout=1200)
 

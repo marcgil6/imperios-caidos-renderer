@@ -14,4 +14,4 @@ RUN ls -la /app/music/ && test -f /app/music/music_01_uprising.mp3
 
 EXPOSE 5000
 
-CMD ["gunicorn", "-b", "0.0.0.0:5000", "--timeout", "3600", "--workers", "1", "--log-level", "info", "render:app"]
+CMD ["gunicorn", "-b", "0.0.0.0:5000", "--timeout", "7200", "--workers", "1", "--log-level", "info", "render:app"]
