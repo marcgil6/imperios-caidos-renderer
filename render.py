@@ -382,42 +382,45 @@ def _tc(t):
     return f"{h}:{m:02d}:{s:02d}.{cs:02d}"
 
 
+def _wrap_phrase(text, max_words=12):
+    """Insert ASS hard line-break (\\N) if phrase exceeds max_words."""
+    words = text.split()
+    if len(words) <= max_words:
+        return text
+    # Prefer splitting after punctuation near the midpoint
+    split_at = max_words
+    for i in range(min(max_words, len(words) - 1), max(0, max_words - 4), -1):
+        if words[i - 1].endswith((',', ';', ':', '—', '.')):
+            split_at = i
+            break
+    return " ".join(words[:split_at]) + "\\N" + " ".join(words[split_at:])
+
+
 def _transcribe_to_ass(narr_path, work):
     """
-    Whisper word-level transcription → sliding-window ASS.
-    Window: 4 words visible at once.  Active word: yellow #FFD700.
-    Font: Liberation Sans Bold 72px, 4px black outline, bottom-centre.
+    Whisper phrase-level ASS subtitles.
+    Each segment fades in/out with \\fad(200,200).
+    Font: Liberation Sans Bold 72px, 3px black outline, bottom-centre (15%).
+    Max 12 words per line — wraps with \\N at natural phrase break.
     """
-    log.info("Transcribing with word-level timestamps (Whisper base, CPU)...")
+    log.info("Transcribing narration (Whisper base, phrase-level, CPU)...")
     segments, info = WHISPER_MODEL.transcribe(
         narr_path,
         language="es",
         beam_size=1,
         best_of=1,
         vad_filter=True,
-        word_timestamps=True,
     )
     log.info("Whisper: lang=%s (%.0f%%)", info.language, info.language_probability * 100)
 
-    words = []
-    for seg in segments:
-        for w in (seg.words or []):
-            txt = w.word.strip()
-            if txt:
-                words.append((w.start, w.end, txt))
-
-    if not words:
-        raise RuntimeError("Whisper returned 0 words — audio may be silent")
-
-    # ASS header
     # MarginV=162 ≈ 15% from bottom (1080 × 0.15)
-    # Yellow active word: #FFD700 → ASS BGR &H0000D7FF
+    # Outline=3 (3px black), Shadow=2, Alignment=2 (bottom-centre)
     header = (
         "[Script Info]\n"
         "ScriptType: v4.00+\n"
         "PlayResX: 1920\n"
         "PlayResY: 1080\n"
-        "WrapStyle: 0\n"
+        "WrapStyle: 1\n"
         "\n"
         "[V4+ Styles]\n"
         "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, "
@@ -425,42 +428,30 @@ def _transcribe_to_ass(narr_path, work):
         "ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, "
         "Alignment, MarginL, MarginR, MarginV, Encoding\n"
         "Style: Default,Liberation Sans,72,&H00FFFFFF,&H000000FF,"
-        "&H00000000,&H80000000,-1,0,0,0,100,100,2,0,1,4,2,2,80,80,162,1\n"
+        "&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,3,2,2,80,80,162,1\n"
         "\n"
         "[Events]\n"
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
     )
 
-    WINDOW = 4
     dialogues = []
-
-    for i, (ws, we, _) in enumerate(words):
-        # Build 4-word context window around current word
-        win_start = max(0, i - 1)
-        win_end = min(len(words), win_start + WINDOW)
-        win_start = max(0, win_end - WINDOW)
-
-        parts = []
-        for j, (_, _, wrd) in enumerate(words[win_start:win_end]):
-            if win_start + j == i:
-                # Active word: yellow
-                parts.append(f"{{\\1c&H0000D7FF&}}{wrd}{{\\1c&H00FFFFFF&}}")
-            else:
-                parts.append(wrd)
-
-        text = " ".join(parts)
-        # End = next word's start; last word gets +0.5s tail
-        end_t = words[i + 1][0] if i < len(words) - 1 else we + 0.5
-
+    for seg in segments:
+        text = seg.text.strip()
+        if not text:
+            continue
+        text = _wrap_phrase(text, max_words=12)
         dialogues.append(
-            f"Dialogue: 0,{_tc(ws)},{_tc(end_t)},Default,,0,0,0,,{{\\fad(80,80)}}{text}"
+            f"Dialogue: 0,{_tc(seg.start)},{_tc(seg.end)},Default,,0,0,0,,{{\\fad(200,200)}}{text}"
         )
+
+    if not dialogues:
+        raise RuntimeError("Whisper returned 0 segments — audio may be silent")
 
     ass_path = os.path.join(work, "subtitles.ass")
     with open(ass_path, "w", encoding="utf-8") as f:
         f.write(header + "\n".join(dialogues))
 
-    log.info("ASS written: %d words → %s", len(words), ass_path)
+    log.info("ASS written: %d phrases → %s", len(dialogues), ass_path)
     return ass_path
 
 
