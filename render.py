@@ -1,7 +1,7 @@
 """
-IMPERIOS CAIDOS - Video Render Service
+ENIGMAS DEL PASADO / IMPERIOS CAIDOS - Video Render Service
 Ken Burns + crossfade + audio mix via FFmpeg.
-Uploads result to Google Drive, returns URL.
+Word-by-word subtitles (Whisper) + CTA overlay in last 60s.
 """
 import base64
 import io
@@ -65,6 +65,8 @@ RENDERS_DIR = Path("/app/renders")
 RENDERS_DIR.mkdir(exist_ok=True)
 
 WHISPER_MODEL = None
+
+_FONT_BOLD = "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf"
 
 
 def _load_whisper():
@@ -150,10 +152,8 @@ def test_subs():
     """Quick diagnostic: reports Whisper load status and libass availability."""
     import subprocess as sp
     whisper_ok = WHISPER_MODEL is not None
-    # Check if FFmpeg has libass (needed for ass filter)
     r = sp.run(["ffmpeg", "-filters"], capture_output=True, text=True)
     libass_ok = "ass" in r.stdout
-    # Check Liberation Sans font is available
     fc = sp.run(["fc-list", ":family=Liberation Sans"], capture_output=True, text=True)
     font_ok = "Liberation" in fc.stdout
     return jsonify({
@@ -170,13 +170,10 @@ def render():
     POST /render
     Body JSON:
     {
-      "images": [
-        {"file_id": "DRIVE_ID", "duration": 12, "filename": "escena_001_a.jpg"},
-        {"url": "https://...", "duration": 10, "filename": "escena_002_a.jpg"}
-      ],
-      "narration_file_id": "DRIVE_ID",       // OR "narration_url": "https://..."
-      "music_track": "uprising",             // uprising | the_long_dark | end
-      "dynasty_name": "azcarraga",
+      "images": [{"file_id": "...", "duration": 12, "filename": "..."}],
+      "narration_file_id": "DRIVE_ID",
+      "music_track": "uprising",
+      "dynasty_name": "enigmas",
       "drive_folder_id": "FOLDER_ID"
     }
     """
@@ -211,8 +208,6 @@ def render():
         else:
             return jsonify({"success": False, "error": "narration_file_id or narration_url required"}), 400
 
-        # Stretch clip durations so the joined video matches narration length exactly.
-        # -shortest in _mix_audio then cuts output at narration end.
         narr_dur = _probe_duration(narr_path)
         n_clips = len(images)
         if narr_dur and n_clips > 0:
@@ -261,33 +256,34 @@ def render():
         joined_path = os.path.join(work, "joined.mp4")
         _join_clips(clips, joined_path, work)
 
-        # 5 ── Mix audio (narration + looped music at -20dB)
+        # 5 ── Mix audio
         log.info("Mixing audio...")
         mixed_path = os.path.join(work, "mixed.mp4")
         _mix_audio(joined_path, narr_path, music_path, mixed_path)
 
         duration_sec = _probe_duration(mixed_path)
 
-        # QC ── Verify video duration matches narration (catches clip-calc failures)
+        # QC ── duration drift check
         if narr_dur and duration_sec:
             drift = abs(duration_sec - narr_dur)
-            log.info("QC duration: video=%.1fs narration=%.1fs drift=%.1fs", duration_sec, narr_dur, drift)
+            log.info("QC duration: video=%.1fs narration=%.1fs drift=%.1fs",
+                     duration_sec, narr_dur, drift)
             if drift > 5:
                 raise RuntimeError(
                     f"QC FAILED: video {duration_sec:.1f}s vs narration {narr_dur:.1f}s "
-                    f"(drift {drift:.1f}s > 5s). Audio would be cut or video would freeze."
+                    f"(drift {drift:.1f}s > 5s)."
                 )
 
-        # 6 ── Burn subtitles
+        # 6 ── Subtitles + CTA overlay
         out_name = f"{dynasty}_{int(time.time())}.mp4"
         out_path = os.path.join(work, out_name)
         if WHISPER_MODEL is not None:
             try:
                 ass_path = _transcribe_to_ass(narr_path, work)
-                _burn_subtitles(mixed_path, ass_path, out_path)
-                log.info("Subtitles burned successfully.")
+                _burn_subtitles_and_cta(mixed_path, ass_path, out_path, duration_sec)
+                log.info("Subtitles + CTA burned successfully.")
             except Exception as e:
-                log.warning("Subtitle burn failed (non-fatal): %s — using video without subs", e)
+                log.warning("Subtitle/CTA burn failed (non-fatal): %s — using plain video", e)
                 shutil.copy(mixed_path, out_path)
         else:
             log.warning("Whisper not available — skipping subtitles.")
@@ -297,11 +293,11 @@ def render():
         log.info("Render complete: %s (%.1f min, %.1f MB)",
                  out_name, (duration_sec or 0) / 60, file_size / 1024 / 1024)
 
-        # 7 ── Save to renders dir for n8n to download and upload to Drive
+        # 7 ── Save to renders dir for n8n pickup
         token = str(uuid.uuid4())
         persistent = RENDERS_DIR / f"{token}.mp4"
         shutil.move(out_path, str(persistent))
-        log.info("Render saved as token=%s (%s)", token, persistent.name)
+        log.info("Render saved as token=%s", token)
 
         return jsonify({
             "success": True,
@@ -340,7 +336,6 @@ def download_render(token):
 
 
 def _get_drive_service(creds_override=None):
-    """Build Drive service. Accepts raw JSON, base64-encoded JSON, or parsed dict."""
     raw = creds_override or os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON", "")
     if isinstance(raw, dict):
         info = raw
@@ -349,7 +344,7 @@ def _get_drive_service(creds_override=None):
     if not info:
         raise ValueError(
             "Google credentials not available. Set GOOGLE_SERVICE_ACCOUNT_JSON env var "
-            "(raw JSON or base64-encoded) or pass google_credentials_json in the request body."
+            "or pass google_credentials_json in the request body."
         )
     creds = service_account.Credentials.from_service_account_info(
         info,
@@ -367,25 +362,6 @@ def _download_drive(service, file_id, dest):
             _, done = dl.next_chunk()
 
 
-def _upload_drive(service, file_path, filename, folder_id):
-    meta = {"name": filename}
-    if folder_id:
-        meta["parents"] = [folder_id]
-    media = MediaFileUpload(file_path, mimetype="video/mp4", resumable=True)
-    uploaded = service.files().create(
-        body=meta, media_body=media, fields="id,webViewLink",
-    ).execute()
-    service.permissions().create(
-        fileId=uploaded["id"],
-        body={"role": "reader", "type": "anyone"},
-    ).execute()
-    return {
-        "file_id": uploaded["id"],
-        "url": uploaded.get("webViewLink",
-                            f"https://drive.google.com/file/d/{uploaded['id']}/view"),
-    }
-
-
 def _download_url(url, dest):
     r = http_requests.get(url, stream=True, timeout=120)
     r.raise_for_status()
@@ -394,78 +370,183 @@ def _download_url(url, dest):
             f.write(chunk)
 
 
-# ── Subtitles ──────────────────────────────────────────────
+# ── Subtitles (word-by-word sliding window) ────────────────
+
+
+def _tc(t):
+    """Seconds → ASS timecode  H:MM:SS.cc"""
+    h = int(t // 3600)
+    m = int((t % 3600) // 60)
+    s = int(t % 60)
+    cs = int(round((t % 1) * 100))
+    return f"{h}:{m:02d}:{s:02d}.{cs:02d}"
 
 
 def _transcribe_to_ass(narr_path, work):
-    """Transcribe narration with Whisper and write an ASS subtitle file."""
-    log.info("Transcribing narration (~base model, CPU)...")
+    """
+    Whisper word-level transcription → sliding-window ASS.
+    Window: 4 words visible at once.  Active word: yellow #FFD700.
+    Font: Liberation Sans Bold 72px, 4px black outline, bottom-centre.
+    """
+    log.info("Transcribing with word-level timestamps (Whisper base, CPU)...")
     segments, info = WHISPER_MODEL.transcribe(
-        narr_path, language="es", beam_size=1, best_of=1,
+        narr_path,
+        language="es",
+        beam_size=1,
+        best_of=1,
         vad_filter=True,
+        word_timestamps=True,
     )
     log.info("Whisper: lang=%s (%.0f%%)", info.language, info.language_probability * 100)
 
-    def _tc(t):
-        h = int(t // 3600)
-        m = int((t % 3600) // 60)
-        s = int(t % 60)
-        cs = int(round((t % 1) * 100))
-        return f"{h}:{m:02d}:{s:02d}.{cs:02d}"
+    words = []
+    for seg in segments:
+        for w in (seg.words or []):
+            txt = w.word.strip()
+            if txt:
+                words.append((w.start, w.end, txt))
 
+    if not words:
+        raise RuntimeError("Whisper returned 0 words — audio may be silent")
+
+    # ASS header
+    # MarginV=162 ≈ 15% from bottom (1080 × 0.15)
+    # Yellow active word: #FFD700 → ASS BGR &H0000D7FF
     header = (
         "[Script Info]\n"
         "ScriptType: v4.00+\n"
         "PlayResX: 1920\n"
         "PlayResY: 1080\n"
-        "WrapStyle: 1\n"
+        "WrapStyle: 0\n"
         "\n"
         "[V4+ Styles]\n"
         "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, "
         "OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, "
         "ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, "
         "Alignment, MarginL, MarginR, MarginV, Encoding\n"
-        # White bold text — 4px black outline — bottom centre — 80px margin
-        "Style: Default,Liberation Sans,74,&H00FFFFFF,&H000000FF,"
-        "&H00000000,&H00000000,-1,0,0,0,100,100,0,0,1,4,1,2,80,80,80,1\n"
+        "Style: Default,Liberation Sans,72,&H00FFFFFF,&H000000FF,"
+        "&H00000000,&H80000000,-1,0,0,0,100,100,2,0,1,4,2,2,80,80,162,1\n"
         "\n"
         "[Events]\n"
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
     )
 
+    WINDOW = 4
     dialogues = []
-    for seg in segments:
-        text = seg.text.strip()
-        if not text:
-            continue
+
+    for i, (ws, we, _) in enumerate(words):
+        # Build 4-word context window around current word
+        win_start = max(0, i - 1)
+        win_end = min(len(words), win_start + WINDOW)
+        win_start = max(0, win_end - WINDOW)
+
+        parts = []
+        for j, (_, _, wrd) in enumerate(words[win_start:win_end]):
+            if win_start + j == i:
+                # Active word: yellow
+                parts.append(f"{{\\1c&H0000D7FF&}}{wrd}{{\\1c&H00FFFFFF&}}")
+            else:
+                parts.append(wrd)
+
+        text = " ".join(parts)
+        # End = next word's start; last word gets +0.5s tail
+        end_t = words[i + 1][0] if i < len(words) - 1 else we + 0.5
+
         dialogues.append(
-            f"Dialogue: 0,{_tc(seg.start)},{_tc(seg.end)},Default,,0,0,0,,{text}"
+            f"Dialogue: 0,{_tc(ws)},{_tc(end_t)},Default,,0,0,0,,{{\\fad(80,80)}}{text}"
         )
 
     ass_path = os.path.join(work, "subtitles.ass")
     with open(ass_path, "w", encoding="utf-8") as f:
         f.write(header + "\n".join(dialogues))
 
-    log.info("ASS written: %d segments → %s", len(dialogues), ass_path)
+    log.info("ASS written: %d words → %s", len(words), ass_path)
     return ass_path
 
 
-def _burn_subtitles(video_path, ass_path, output_path):
-    """Re-encode video with ASS subtitles burned in."""
-    _ffmpeg([
-        "-i", video_path,
-        "-vf", f"ass={ass_path}",
-        "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
-        "-c:a", "copy",
-        output_path,
-    ], timeout=1200)
+# ── CTA overlay (last 60 seconds) ─────────────────────────
+
+
+def _build_cta_filters(duration_sec):
+    """
+    FFmpeg drawtext filters for like/subscribe CTA overlay.
+    Like appears at T-60s, Subscribe at T-55s.
+    Positioned bottom-left (x=80), above subtitle area.
+    """
+    if duration_sec is None or duration_sec < 65:
+        return []
+
+    t_like = duration_sec - 60.0
+    t_sub = duration_sec - 55.0
+    f = _FONT_BOLD
+
+    return [
+        # ── Like CTA (T-60s) ──────────────────────────────
+        (
+            f"drawtext=fontfile={f}:text='LIKE'"
+            f":fontsize=44:fontcolor=white"
+            f":x=80:y=H-295"
+            f":box=1:boxcolor=black@0.65:boxborderw=14"
+            f":enable='gte(t,{t_like:.1f})'"
+        ),
+        (
+            f"drawtext=fontfile={f}:text='Dale like'"
+            f":fontsize=30:fontcolor=white"
+            f":x=80:y=H-242"
+            f":box=1:boxcolor=black@0.50:boxborderw=10"
+            f":enable='gte(t,{t_like:.1f})'"
+        ),
+        # ── Subscribe CTA (T-55s) ─────────────────────────
+        (
+            f"drawtext=fontfile={f}:text='SUSCRIBETE'"
+            f":fontsize=44:fontcolor=white"
+            f":x=80:y=H-175"
+            f":box=1:boxcolor=red@0.70:boxborderw=14"
+            f":enable='gte(t,{t_sub:.1f})'"
+        ),
+        (
+            f"drawtext=fontfile={f}:text='Suscribete al canal'"
+            f":fontsize=26:fontcolor=white"
+            f":x=80:y=H-122"
+            f":box=1:boxcolor=black@0.50:boxborderw=8"
+            f":enable='gte(t,{t_sub:.1f})'"
+        ),
+    ]
+
+
+def _burn_subtitles_and_cta(video_path, ass_path, output_path, duration_sec=None):
+    """
+    Single FFmpeg pass: burn ASS word subtitles + CTA drawtext overlay.
+    Uses filter_complex to safely chain ass= and multiple drawtext= filters.
+    """
+    cta = _build_cta_filters(duration_sec)
+
+    if cta:
+        # Chain: ass subtitles → CTA drawtext filters → output pad
+        chain = "ass=" + ass_path + "," + ",".join(cta)
+        _ffmpeg([
+            "-i", video_path,
+            "-filter_complex", f"[0:v]{chain}[vout]",
+            "-map", "[vout]",
+            "-map", "0:a",
+            "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+            "-c:a", "copy",
+            output_path,
+        ], timeout=1800)
+    else:
+        _ffmpeg([
+            "-i", video_path,
+            "-vf", f"ass={ass_path}",
+            "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+            "-c:a", "copy",
+            output_path,
+        ], timeout=1800)
 
 
 # ── FFmpeg ─────────────────────────────────────────────────
 
 
 def _ken_burns(image_path, output_path, duration):
-    """Create a Ken Burns clip: slow 3% zoom over duration."""
     frames = max(int(duration * FPS), 1)
     zf = ZOOM_TOTAL / frames
 
@@ -483,7 +564,6 @@ def _ken_burns(image_path, output_path, duration):
 
 
 def _join_clips(clips, output_path, work_dir, _level=0):
-    """Join clips with xfade crossfade, batched for large counts."""
     if len(clips) == 1:
         shutil.copy(clips[0]["path"], output_path)
         return
@@ -509,7 +589,6 @@ def _join_clips(clips, output_path, work_dir, _level=0):
 
 
 def _xfade_batch(clips, output_path):
-    """xfade up to XFADE_BATCH clips in a single FFmpeg call."""
     inputs = []
     for c in clips:
         inputs += ["-i", c["path"]]
@@ -528,7 +607,6 @@ def _xfade_batch(clips, output_path):
             f"{in1}{in2}xfade=transition=fade:duration={CROSSFADE_SEC}:offset={offset:.3f}{out}"
         )
 
-    # Write filter script to avoid command-line length limits
     fc = ";".join(parts)
     _ffmpeg(inputs + [
         "-filter_complex", fc,
@@ -539,7 +617,6 @@ def _xfade_batch(clips, output_path):
 
 
 def _mix_audio(video_path, narration_path, music_path, output_path):
-    """Mix narration (1.0) + looped music (-20dB ≈ 0.1) onto video."""
     fc = (
         "[1:a]aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo[narr];"
         "[2:a]aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo,"
