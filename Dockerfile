@@ -9,9 +9,6 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Pre-download Whisper base model at build time so first render isn't slow
-RUN python -c "from faster_whisper import WhisperModel; WhisperModel('base', device='cpu', compute_type='float32'); print('Whisper base model ready')"
-
 COPY render.py .
 COPY music/ ./music/
 RUN ls -la /app/music/ && test -f /app/music/music_01_uprising.mp3
