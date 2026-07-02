@@ -1,7 +1,7 @@
 FROM python:3.11-slim
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ffmpeg fonts-liberation fontconfig \
+    && apt-get install -y --no-install-recommends ffmpeg fonts-liberation fontconfig libgomp1 \
     && fc-cache -fv \
     && rm -rf /var/lib/apt/lists/*
 
