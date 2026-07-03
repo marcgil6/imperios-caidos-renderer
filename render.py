@@ -293,15 +293,39 @@ def render():
         log.info("Render complete: %s (%.1f min, %.1f MB)",
                  out_name, (duration_sec or 0) / 60, file_size / 1024 / 1024)
 
-        # 7 ── Save to renders dir for n8n pickup
+        # 7 ── Save to renders dir and upload directly to Drive
         token = str(uuid.uuid4())
         persistent = RENDERS_DIR / f"{token}.mp4"
         shutil.move(out_path, str(persistent))
         log.info("Render saved as token=%s", token)
 
+        drive_file_id = None
+        drive_webViewLink = None
+        if folder_id:
+            try:
+                from googleapiclient.http import MediaFileUpload
+                log.info("Uploading to Drive folder %s...", folder_id)
+                file_metadata = {"name": out_name, "parents": [folder_id]}
+                media = MediaFileUpload(
+                    str(persistent), mimetype="video/mp4",
+                    resumable=True, chunksize=10 * 1024 * 1024
+                )
+                result = drive.files().create(
+                    body=file_metadata, media_body=media, fields="id,webViewLink"
+                ).execute()
+                drive_file_id = result.get("id")
+                drive_webViewLink = result.get("webViewLink")
+                log.info("Uploaded to Drive: id=%s", drive_file_id)
+                persistent.unlink()
+                log.info("Local render deleted after Drive upload.")
+            except Exception as e:
+                log.error("Drive upload failed (keeping local for /download): %s", e)
+
         return jsonify({
             "success": True,
             "download_token": token,
+            "drive_file_id": drive_file_id,
+            "drive_webViewLink": drive_webViewLink,
             "filename": out_name,
             "duration_sec": duration_sec,
             "duration_min": round(duration_sec / 60, 1) if duration_sec else None,
