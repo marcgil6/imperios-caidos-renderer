@@ -428,12 +428,17 @@ def _transcribe_to_ass(narr_path, work):
     Max 12 words per line — wraps with \\N at natural phrase break.
     """
     log.info("Transcribing narration (Whisper base, phrase-level, CPU)...")
+    real_dur = _probe_duration(narr_path)
     segments, info = WHISPER_MODEL.transcribe(
         narr_path,
         language="es",
         beam_size=1,
         best_of=1,
         vad_filter=True,
+        # Long single-take narration (20+ min) makes Whisper drift/hallucinate
+        # and silently stop emitting segments partway through when it keeps
+        # conditioning on its own (increasingly wrong) previous output.
+        condition_on_previous_text=False,
     )
     log.info("Whisper: lang=%s (%.0f%%)", info.language, info.language_probability * 100)
 
@@ -459,6 +464,7 @@ def _transcribe_to_ass(narr_path, work):
     )
 
     dialogues = []
+    last_end = 0.0
     for seg in segments:
         text = seg.text.strip()
         if not text:
@@ -467,6 +473,7 @@ def _transcribe_to_ass(narr_path, work):
         dialogues.append(
             f"Dialogue: 0,{_tc(seg.start)},{_tc(seg.end)},Default,,0,0,0,,{{\\fad(200,200)}}{text}"
         )
+        last_end = seg.end
 
     if not dialogues:
         raise RuntimeError("Whisper returned 0 segments — audio may be silent")
@@ -476,6 +483,13 @@ def _transcribe_to_ass(narr_path, work):
         f.write(header + "\n".join(dialogues))
 
     log.info("ASS written: %d phrases → %s", len(dialogues), ass_path)
+    if real_dur:
+        coverage_gap = real_dur - last_end
+        log.info("Subtitle coverage: last subtitle ends at %.1fs, audio is %.1fs (gap %.1fs)",
+                  last_end, real_dur, coverage_gap)
+        if coverage_gap > 30:
+            log.warning("Subtitles stop %.1fs before audio ends — Whisper may have "
+                        "drifted/stopped early on this render.", coverage_gap)
     return ass_path
 
 
@@ -486,7 +500,7 @@ def _build_cta_filters(duration_sec):
     """
     FFmpeg drawtext filters for like/subscribe CTA overlay.
     Like appears at T-60s, Subscribe at T-55s.
-    Positioned bottom-left (x=80), above subtitle area.
+    Centered on screen, both horizontally and vertically, as a stacked block.
     """
     if duration_sec is None or duration_sec < 65:
         return []
@@ -500,14 +514,14 @@ def _build_cta_filters(duration_sec):
         (
             f"drawtext=fontfile={f}:text='LIKE'"
             f":fontsize=44:fontcolor=white"
-            f":x=80:y=H-295"
+            f":x=(w-text_w)/2:y=(h-text_h)/2-140"
             f":box=1:boxcolor=black@0.65:boxborderw=14"
             f":enable='gte(t,{t_like:.1f})'"
         ),
         (
             f"drawtext=fontfile={f}:text='Dale like'"
             f":fontsize=30:fontcolor=white"
-            f":x=80:y=H-242"
+            f":x=(w-text_w)/2:y=(h-text_h)/2-82"
             f":box=1:boxcolor=black@0.50:boxborderw=10"
             f":enable='gte(t,{t_like:.1f})'"
         ),
@@ -515,14 +529,14 @@ def _build_cta_filters(duration_sec):
         (
             f"drawtext=fontfile={f}:text='SUSCRIBETE'"
             f":fontsize=44:fontcolor=white"
-            f":x=80:y=H-175"
+            f":x=(w-text_w)/2:y=(h-text_h)/2+6"
             f":box=1:boxcolor=red@0.70:boxborderw=14"
             f":enable='gte(t,{t_sub:.1f})'"
         ),
         (
             f"drawtext=fontfile={f}:text='Suscribete al canal'"
             f":fontsize=26:fontcolor=white"
-            f":x=80:y=H-122"
+            f":x=(w-text_w)/2:y=(h-text_h)/2+66"
             f":box=1:boxcolor=black@0.50:boxborderw=8"
             f":enable='gte(t,{t_sub:.1f})'"
         ),
