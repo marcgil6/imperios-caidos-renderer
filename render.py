@@ -34,7 +34,7 @@ log = logging.getLogger("render")
 # Bump this string on every render.py change that affects output —
 # exposed via /health and in the /render response so a stale EasyPanel
 # deploy can be spotted without shell access to the container.
-BUILD_VERSION = "2026-07-09-thumbnail-marker-hook"
+BUILD_VERSION = "2026-07-09-thumbnail-arrow"
 
 
 def _parse_creds(raw):
@@ -511,7 +511,7 @@ def _fit_font(draw, text, font_path, max_width, start_size, min_size):
 
 
 
-# Candidate positions (fraction of W, H) for the attention-marker ring,
+# Candidate positions (fraction of W, H) for the attention-marker arrow tip,
 # spread across the lower two-thirds of frame so they never collide with
 # the top text block. Marc picks whichever variant actually lands on the
 # "impossible detail" in that image.
@@ -522,14 +522,36 @@ MARKER_POSITIONS = {
 }
 
 
-def _draw_attention_marker(draw, cx, cy, radius=58):
-    """High-contrast red ring w/ white halo — points at the detail that justifies the title."""
-    RED = (255, 40, 20)
+def _draw_attention_arrow(draw, tip_x, tip_y, W, length=140, shaft_width=16, head_length=52, head_width=46):
+    """High-contrast red arrow w/ white halo, pointing at the detail that justifies the title."""
+    RED = (255, 30, 20)
     WHITE = (255, 255, 255)
-    draw.ellipse([cx - radius - 6, cy - radius - 6, cx + radius + 6, cy + radius + 6],
-                 outline=WHITE, width=10)
-    draw.ellipse([cx - radius, cy - radius, cx + radius, cy + radius],
-                 outline=RED, width=7)
+
+    # Tail sits diagonally above the tip; flip horizontally when the tip is
+    # near the right edge so the shaft never runs off-canvas.
+    dir_x = -1 if tip_x > W * 0.6 else 1
+    tail_x = tip_x - dir_x * length * 0.75
+    tail_y = tip_y - length * 0.75
+
+    dx, dy = tip_x - tail_x, tip_y - tail_y
+    dist = math.hypot(dx, dy) or 1.0
+    ux, uy = dx / dist, dy / dist
+    px, py = -uy, ux
+
+    for color, sw, hl, hw in (
+        (WHITE, shaft_width + 8, head_length + 10, head_width + 14),
+        (RED, shaft_width, head_length, head_width),
+    ):
+        base_x, base_y = tip_x - ux * hl, tip_y - uy * hl
+        draw.line([tail_x, tail_y, base_x, base_y], fill=color, width=sw)
+        draw.polygon(
+            [
+                (tip_x, tip_y),
+                (base_x + px * hw / 2, base_y + py * hw / 2),
+                (base_x - px * hw / 2, base_y - py * hw / 2),
+            ],
+            fill=color,
+        )
 
 
 def _generate_thumbnail(image_path, main_text, secondary_text, variant, out_path):
@@ -573,7 +595,7 @@ def _generate_thumbnail(image_path, main_text, secondary_text, variant, out_path
                   stroke_width=stroke_sec, stroke_fill=OUTLINE, anchor="ma", align="center")
 
     mx_frac, my_frac = MARKER_POSITIONS.get(variant, MARKER_POSITIONS["B"])
-    _draw_attention_marker(draw, int(W * mx_frac), int(H * my_frac))
+    _draw_attention_arrow(draw, int(W * mx_frac), int(H * my_frac), W)
 
     img.save(out_path, "JPEG", quality=92)
 
