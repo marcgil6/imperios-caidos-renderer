@@ -22,6 +22,7 @@ from flask import Flask, request, jsonify, send_file
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
+from PIL import Image, ImageDraw, ImageFont
 
 app = Flask(__name__)
 logging.basicConfig(
@@ -33,7 +34,7 @@ log = logging.getLogger("render")
 # Bump this string on every render.py change that affects output —
 # exposed via /health and in the /render response so a stale EasyPanel
 # deploy can be spotted without shell access to the container.
-BUILD_VERSION = "2026-07-09-faststart-fix"
+BUILD_VERSION = "2026-07-09-thumbnail-endpoint"
 
 
 def _parse_creds(raw):
@@ -70,9 +71,25 @@ _check_google_env()
 RENDERS_DIR = Path("/app/renders")
 RENDERS_DIR.mkdir(exist_ok=True)
 
+THUMBS_DIR = Path("/app/thumbs")
+THUMBS_DIR.mkdir(exist_ok=True)
+
 WHISPER_MODEL = None
 
 _FONT_BOLD = "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf"
+
+
+def _find_anton_font():
+    candidates = [
+        Path("/app/fonts/Anton-Regular.ttf"),
+        Path(__file__).resolve().parent / "fonts" / "Anton-Regular.ttf",
+    ]
+    for c in candidates:
+        if c.exists():
+            return str(c)
+    return _FONT_BOLD  # fallback so thumbnail generation never hard-fails on a missing font
+
+_FONT_ANTON = _find_anton_font()
 
 
 def _load_whisper():
@@ -367,6 +384,162 @@ def download_render(token):
     log.info("Serving render token=%s", token)
     return send_file(str(path), mimetype="video/mp4", as_attachment=True,
                      download_name=f"{token}.mp4")
+
+
+@app.route("/thumbnail", methods=["POST"])
+def thumbnail():
+    """
+    Generate 2 YouTube thumbnail variants (1280x720 JPEG) from a base image
+    + a brief_miniatura brief. multipart/form-data: 'image' file,
+    'brief_text' (raw brief_miniatura content), optional 'record_id'.
+    """
+    if "image" not in request.files:
+        return jsonify({"success": False, "error": "image file required (multipart 'image' field)"}), 400
+    brief_text = request.form.get("brief_text", "")
+    record_id = request.form.get("record_id", "thumb")
+    if not brief_text.strip():
+        return jsonify({"success": False, "error": "brief_text required"}), 400
+
+    main_text, secondary_text = _parse_brief_miniatura(brief_text)
+    if not main_text:
+        return jsonify({"success": False, "error": "Could not extract TEXTO PRINCIPAL from brief_text"}), 400
+
+    work = tempfile.mkdtemp(prefix="thumb_")
+    try:
+        img_path = os.path.join(work, "base.jpg")
+        request.files["image"].save(img_path)
+
+        token_a = str(uuid.uuid4())
+        token_b = str(uuid.uuid4())
+        _generate_thumbnail(img_path, main_text, secondary_text, "A", str(THUMBS_DIR / f"{token_a}.jpg"))
+        _generate_thumbnail(img_path, main_text, secondary_text, "B", str(THUMBS_DIR / f"{token_b}.jpg"))
+
+        log.info("Thumbnails generated for record=%s: main=%r secondary=%r",
+                 record_id, main_text, secondary_text)
+        return jsonify({
+            "success": True,
+            "build_version": BUILD_VERSION,
+            "record_id": record_id,
+            "main_text": main_text,
+            "secondary_text": secondary_text,
+            "variant_a_token": token_a,
+            "variant_b_token": token_b,
+        })
+    except Exception as e:
+        log.exception("Thumbnail generation failed")
+        return jsonify({"success": False, "error": str(e)}), 500
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+@app.route("/thumbnail-download/<token>", methods=["GET"])
+def thumbnail_download(token):
+    if not re.match(r'^[0-9a-f\-]+$', token):
+        return jsonify({"error": "invalid token"}), 400
+    path = THUMBS_DIR / f"{token}.jpg"
+    if not path.exists():
+        return jsonify({"error": "thumbnail not found"}), 404
+    return send_file(str(path), mimetype="image/jpeg", as_attachment=True,
+                     download_name=f"{token}.jpg")
+
+
+# ── Thumbnails ─────────────────────────────────────────────
+
+
+def _parse_brief_miniatura(brief_text):
+    """Extract TEXTO PRINCIPAL / TEXTO SECUNDARIO from the structured brief_miniatura field."""
+    main_text, secondary_text = "", ""
+    for line in brief_text.splitlines():
+        line = line.strip()
+        if ":" not in line:
+            continue
+        key, _, val = line.partition(":")
+        key = key.strip().upper()
+        val = val.strip()
+        if "TEXTO PRINCIPAL" in key:
+            main_text = val
+        elif "TEXTO SECUNDARIO" in key:
+            secondary_text = val
+    if not main_text:
+        for line in brief_text.splitlines():
+            if line.strip():
+                main_text = line.strip()
+                break
+    return main_text, secondary_text
+
+
+def _cover_resize(img, target_w, target_h):
+    """Resize+crop an image to exactly fill target_w x target_h (cover, not stretch)."""
+    src_w, src_h = img.size
+    scale = max(target_w / src_w, target_h / src_h)
+    new_w, new_h = max(1, round(src_w * scale)), max(1, round(src_h * scale))
+    img = img.resize((new_w, new_h), Image.LANCZOS)
+    left = (new_w - target_w) // 2
+    top = (new_h - target_h) // 2
+    return img.crop((left, top, left + target_w, top + target_h))
+
+
+def _fit_font(draw, text, font_path, max_width, start_size, min_size):
+    size = start_size
+    while size > min_size:
+        font = ImageFont.truetype(font_path, size)
+        stroke_w = max(2, size // 14)
+        bbox = draw.textbbox((0, 0), text, font=font, stroke_width=stroke_w)
+        if (bbox[2] - bbox[0]) <= max_width:
+            return font, size
+        size -= 4
+    return ImageFont.truetype(font_path, min_size), min_size
+
+
+def _generate_thumbnail(image_path, main_text, secondary_text, variant, out_path):
+    """
+    1280x720 YouTube thumbnail: uppercase Anton text, gold w/ dark outline,
+    high-impact for mobile legibility. Variant A = top-center block,
+    Variant B = top-left corner block.
+    """
+    W, H = 1280, 720
+    GOLD = (247, 197, 72)
+    WHITE = (255, 255, 255)
+    OUTLINE = (12, 10, 8)
+
+    img = Image.open(image_path).convert("RGB")
+    img = _cover_resize(img, W, H)
+    draw = ImageDraw.Draw(img)
+
+    main_text = main_text.upper()
+    secondary_text = (secondary_text or "").upper()
+
+    margin = 64
+    max_w = W - 2 * margin
+
+    main_font, main_size = _fit_font(draw, main_text, _FONT_ANTON, max_w, 130, 56)
+    stroke_main = max(4, main_size // 12)
+
+    sec_font, sec_size, stroke_sec = None, 0, 0
+    if secondary_text:
+        sec_font, sec_size = _fit_font(draw, secondary_text, _FONT_ANTON, max_w, 62, 30)
+        stroke_sec = max(3, sec_size // 12)
+
+    if variant == "A":
+        cx = W // 2
+        main_y = int(H * 0.10)
+        draw.text((cx, main_y), main_text, font=main_font, fill=GOLD,
+                  stroke_width=stroke_main, stroke_fill=OUTLINE, anchor="ma", align="center")
+        if secondary_text:
+            sec_y = main_y + main_size + 24
+            draw.text((cx, sec_y), secondary_text, font=sec_font, fill=WHITE,
+                      stroke_width=stroke_sec, stroke_fill=OUTLINE, anchor="ma", align="center")
+    else:
+        x = margin
+        y = int(H * 0.07)
+        draw.text((x, y), main_text, font=main_font, fill=GOLD,
+                  stroke_width=stroke_main, stroke_fill=OUTLINE, anchor="la")
+        if secondary_text:
+            sec_y = y + main_size + 20
+            draw.text((x, sec_y), secondary_text, font=sec_font, fill=WHITE,
+                      stroke_width=stroke_sec, stroke_fill=OUTLINE, anchor="la")
+
+    img.save(out_path, "JPEG", quality=92)
 
 
 # ── Google Drive ───────────────────────────────────────────
