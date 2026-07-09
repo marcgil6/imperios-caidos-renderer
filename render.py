@@ -33,7 +33,7 @@ log = logging.getLogger("render")
 # Bump this string on every render.py change that affects output —
 # exposed via /health and in the /render response so a stale EasyPanel
 # deploy can be spotted without shell access to the container.
-BUILD_VERSION = "2026-07-09-chunked-whisper"
+BUILD_VERSION = "2026-07-09-faststart-fix"
 
 
 def _parse_creds(raw):
@@ -196,6 +196,8 @@ def render():
     music_key = data.get("music_track", "uprising")
     music_path = str(MUSIC.get(music_key, MUSIC["uprising"]))
     dynasty = data.get("dynasty_name", data.get("output_filename", "video"))
+    if dynasty.lower().endswith(".mp4"):
+        dynasty = dynasty[:-4]
     folder_id = data.get("drive_folder_id")
     google_creds = data.get("google_credentials_json")
 
@@ -620,6 +622,7 @@ def _burn_subtitles_and_cta(video_path, ass_path, output_path, duration_sec=None
             "-map", "0:a",
             "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
             "-c:a", "copy",
+            "-movflags", "+faststart",
             output_path,
         ], timeout=1800)
     else:
@@ -628,6 +631,7 @@ def _burn_subtitles_and_cta(video_path, ass_path, output_path, duration_sec=None
             "-vf", f"ass={ass_path}",
             "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
             "-c:a", "copy",
+            "-movflags", "+faststart",
             output_path,
         ], timeout=1800)
 
@@ -720,6 +724,7 @@ def _mix_audio(video_path, narration_path, music_path, output_path):
         "-map", "0:v", "-map", "[aout]",
         "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
         "-shortest",
+        "-movflags", "+faststart",
         output_path,
     ], timeout=600)
 
