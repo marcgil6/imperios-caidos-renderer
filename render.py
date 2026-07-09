@@ -34,7 +34,7 @@ log = logging.getLogger("render")
 # Bump this string on every render.py change that affects output —
 # exposed via /health and in the /render response so a stale EasyPanel
 # deploy can be spotted without shell access to the container.
-BUILD_VERSION = "2026-07-09-thumbnail-endpoint"
+BUILD_VERSION = "2026-07-09-thumbnail-marker-hook"
 
 
 def _parse_creds(raw):
@@ -389,30 +389,48 @@ def download_render(token):
 @app.route("/thumbnail", methods=["POST"])
 def thumbnail():
     """
-    Generate 2 YouTube thumbnail variants (1280x720 JPEG) from a base image
-    + a brief_miniatura brief. multipart/form-data: 'image' file,
-    'brief_text' (raw brief_miniatura content), optional 'record_id'.
+    Generate 3 YouTube thumbnail variants (1280x720 JPEG) from a base image
+    + a brief_miniatura brief. Same text layout across variants; each one
+    places the attention-marker ring at a different candidate position
+    (A=left, B=center, C=right) so the best composition can be picked by eye.
+
+    multipart/form-data:
+      'image'            - base image file
+      'brief_text'       - raw brief_miniatura content (used to derive
+                            main_text if main_text_override isn't given)
+      'main_text_override'      - optional, wins over brief_text parsing
+      'secondary_text_override' - optional, wins over brief_text parsing
+                                   (use this for the LLM-generated specific
+                                   hook instead of a generic label)
+      'record_id'        - optional
     """
     if "image" not in request.files:
         return jsonify({"success": False, "error": "image file required (multipart 'image' field)"}), 400
     brief_text = request.form.get("brief_text", "")
     record_id = request.form.get("record_id", "thumb")
-    if not brief_text.strip():
-        return jsonify({"success": False, "error": "brief_text required"}), 400
+    main_override = request.form.get("main_text_override", "").strip()
+    secondary_override = request.form.get("secondary_text_override", "").strip()
 
-    main_text, secondary_text = _parse_brief_miniatura(brief_text)
+    main_text, secondary_text = "", ""
+    if brief_text.strip():
+        main_text, secondary_text = _parse_brief_miniatura(brief_text)
+    if main_override:
+        main_text = main_override
+    if secondary_override:
+        secondary_text = secondary_override
     if not main_text:
-        return jsonify({"success": False, "error": "Could not extract TEXTO PRINCIPAL from brief_text"}), 400
+        return jsonify({"success": False, "error": "Could not resolve main_text (need brief_text or main_text_override)"}), 400
 
     work = tempfile.mkdtemp(prefix="thumb_")
     try:
         img_path = os.path.join(work, "base.jpg")
         request.files["image"].save(img_path)
 
-        token_a = str(uuid.uuid4())
-        token_b = str(uuid.uuid4())
-        _generate_thumbnail(img_path, main_text, secondary_text, "A", str(THUMBS_DIR / f"{token_a}.jpg"))
-        _generate_thumbnail(img_path, main_text, secondary_text, "B", str(THUMBS_DIR / f"{token_b}.jpg"))
+        tokens = {}
+        for variant in ("A", "B", "C"):
+            token = str(uuid.uuid4())
+            _generate_thumbnail(img_path, main_text, secondary_text, variant, str(THUMBS_DIR / f"{token}.jpg"))
+            tokens[variant] = token
 
         log.info("Thumbnails generated for record=%s: main=%r secondary=%r",
                  record_id, main_text, secondary_text)
@@ -422,8 +440,9 @@ def thumbnail():
             "record_id": record_id,
             "main_text": main_text,
             "secondary_text": secondary_text,
-            "variant_a_token": token_a,
-            "variant_b_token": token_b,
+            "variant_a_token": tokens["A"],
+            "variant_b_token": tokens["B"],
+            "variant_c_token": tokens["C"],
         })
     except Exception as e:
         log.exception("Thumbnail generation failed")
@@ -491,11 +510,35 @@ def _fit_font(draw, text, font_path, max_width, start_size, min_size):
     return ImageFont.truetype(font_path, min_size), min_size
 
 
+
+# Candidate positions (fraction of W, H) for the attention-marker ring,
+# spread across the lower two-thirds of frame so they never collide with
+# the top text block. Marc picks whichever variant actually lands on the
+# "impossible detail" in that image.
+MARKER_POSITIONS = {
+    "A": (0.28, 0.64),
+    "B": (0.50, 0.70),
+    "C": (0.72, 0.64),
+}
+
+
+def _draw_attention_marker(draw, cx, cy, radius=58):
+    """High-contrast red ring w/ white halo — points at the detail that justifies the title."""
+    RED = (255, 40, 20)
+    WHITE = (255, 255, 255)
+    draw.ellipse([cx - radius - 6, cy - radius - 6, cx + radius + 6, cy + radius + 6],
+                 outline=WHITE, width=10)
+    draw.ellipse([cx - radius, cy - radius, cx + radius, cy + radius],
+                 outline=RED, width=7)
+
+
 def _generate_thumbnail(image_path, main_text, secondary_text, variant, out_path):
     """
-    1280x720 YouTube thumbnail: uppercase Anton text, gold w/ dark outline,
-    high-impact for mobile legibility. Variant A = top-center block,
-    Variant B = top-left corner block.
+    1280x720 YouTube thumbnail: uppercase Anton text (top-center, gold w/
+    dark outline) + a bright red attention-marker ring over the "impossible
+    detail". All 3 variants share the same text layout; only the marker
+    position changes (see MARKER_POSITIONS) so the best composition can be
+    picked by eye.
     """
     W, H = 1280, 720
     GOLD = (247, 197, 72)
@@ -520,24 +563,17 @@ def _generate_thumbnail(image_path, main_text, secondary_text, variant, out_path
         sec_font, sec_size = _fit_font(draw, secondary_text, _FONT_ANTON, max_w, 62, 30)
         stroke_sec = max(3, sec_size // 12)
 
-    if variant == "A":
-        cx = W // 2
-        main_y = int(H * 0.10)
-        draw.text((cx, main_y), main_text, font=main_font, fill=GOLD,
-                  stroke_width=stroke_main, stroke_fill=OUTLINE, anchor="ma", align="center")
-        if secondary_text:
-            sec_y = main_y + main_size + 24
-            draw.text((cx, sec_y), secondary_text, font=sec_font, fill=WHITE,
-                      stroke_width=stroke_sec, stroke_fill=OUTLINE, anchor="ma", align="center")
-    else:
-        x = margin
-        y = int(H * 0.07)
-        draw.text((x, y), main_text, font=main_font, fill=GOLD,
-                  stroke_width=stroke_main, stroke_fill=OUTLINE, anchor="la")
-        if secondary_text:
-            sec_y = y + main_size + 20
-            draw.text((x, sec_y), secondary_text, font=sec_font, fill=WHITE,
-                      stroke_width=stroke_sec, stroke_fill=OUTLINE, anchor="la")
+    cx = W // 2
+    main_y = int(H * 0.10)
+    draw.text((cx, main_y), main_text, font=main_font, fill=GOLD,
+              stroke_width=stroke_main, stroke_fill=OUTLINE, anchor="ma", align="center")
+    if secondary_text:
+        sec_y = main_y + main_size + 24
+        draw.text((cx, sec_y), secondary_text, font=sec_font, fill=WHITE,
+                  stroke_width=stroke_sec, stroke_fill=OUTLINE, anchor="ma", align="center")
+
+    mx_frac, my_frac = MARKER_POSITIONS.get(variant, MARKER_POSITIONS["B"])
+    _draw_attention_marker(draw, int(W * mx_frac), int(H * my_frac))
 
     img.save(out_path, "JPEG", quality=92)
 
