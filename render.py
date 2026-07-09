@@ -6,6 +6,7 @@ Word-by-word subtitles (Whisper) + CTA overlay in last 60s.
 import base64
 import io
 import json
+import math
 import os
 import re
 import shutil
@@ -28,6 +29,11 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(message)s",
 )
 log = logging.getLogger("render")
+
+# Bump this string on every render.py change that affects output —
+# exposed via /health and in the /render response so a stale EasyPanel
+# deploy can be spotted without shell access to the container.
+BUILD_VERSION = "2026-07-09-chunked-whisper"
 
 
 def _parse_creds(raw):
@@ -122,6 +128,8 @@ def health():
         "status": "ok" if ffmpeg_ok and all(music_ok.values()) else "degraded",
         "ffmpeg": ffmpeg_ok,
         "music": music_ok,
+        "build_version": BUILD_VERSION,
+        "whisper_loaded": WHISPER_MODEL is not None,
     })
 
 
@@ -277,9 +285,10 @@ def render():
         # 6 ── Subtitles + CTA overlay
         out_name = f"{dynasty}_{int(time.time())}.mp4"
         out_path = os.path.join(work, out_name)
+        subtitle_coverage = None
         if WHISPER_MODEL is not None:
             try:
-                ass_path = _transcribe_to_ass(narr_path, work)
+                ass_path, subtitle_coverage = _transcribe_to_ass(narr_path, work)
                 _burn_subtitles_and_cta(mixed_path, ass_path, out_path, duration_sec)
                 log.info("Subtitles + CTA burned successfully.")
             except Exception as e:
@@ -334,6 +343,8 @@ def render():
             "size_bytes": file_size,
             "images_count": len(img_list),
             "music_track": music_key,
+            "build_version": BUILD_VERSION,
+            "subtitle_coverage": subtitle_coverage,
         })
 
     except Exception as e:
@@ -420,17 +431,19 @@ def _wrap_phrase(text, max_words=12):
     return " ".join(words[:split_at]) + "\\N" + " ".join(words[split_at:])
 
 
-def _transcribe_to_ass(narr_path, work):
-    """
-    Whisper phrase-level ASS subtitles.
-    Each segment fades in/out with \\fad(200,200).
-    Font: Liberation Sans Bold 72px, 3px black outline, bottom-centre (15%).
-    Max 12 words per line — wraps with \\N at natural phrase break.
-    """
-    log.info("Transcribing narration (Whisper base, phrase-level, CPU)...")
-    real_dur = _probe_duration(narr_path)
+def _extract_audio_chunk(src_path, dest_path, start_sec, dur_sec):
+    """Cut [start_sec, start_sec+dur_sec) out of src_path into a 16kHz mono wav."""
+    subprocess.run(
+        ["ffmpeg", "-y", "-hide_banner", "-loglevel", "warning",
+         "-ss", str(start_sec), "-t", str(dur_sec), "-i", str(src_path),
+         "-ar", "16000", "-ac", "1", str(dest_path)],
+        capture_output=True, text=True, timeout=120, check=True,
+    )
+
+
+def _whisper_transcribe_segments(audio_path):
     segments, info = WHISPER_MODEL.transcribe(
-        narr_path,
+        audio_path,
         language="es",
         beam_size=1,
         best_of=1,
@@ -440,7 +453,54 @@ def _transcribe_to_ass(narr_path, work):
         # conditioning on its own (increasingly wrong) previous output.
         condition_on_previous_text=False,
     )
-    log.info("Whisper: lang=%s (%.0f%%)", info.language, info.language_probability * 100)
+    return list(segments), info
+
+
+# Chunk narrations longer than this before transcribing — faster-whisper
+# (base model, greedy decode) has a known failure mode on single-pass
+# 20+ min audio where it silently stops emitting segments partway through.
+# Splitting into ~5 min windows keeps each pass short enough to avoid it.
+WHISPER_CHUNK_SEC = 300
+
+
+def _transcribe_to_ass(narr_path, work):
+    """
+    Whisper phrase-level ASS subtitles.
+    Each segment fades in/out with \\fad(200,200).
+    Font: Liberation Sans Bold 72px, 3px black outline, bottom-centre (15%).
+    Max 12 words per line — wraps with \\N at natural phrase break.
+    Returns (ass_path, coverage_dict).
+    """
+    real_dur = _probe_duration(narr_path)
+    all_segments = []  # (start, end, text) with offsets relative to full narration
+
+    if real_dur and real_dur > WHISPER_CHUNK_SEC * 1.2:
+        n_chunks = math.ceil(real_dur / WHISPER_CHUNK_SEC)
+        log.info("Transcribing narration in %d chunks of ~%ds (audio=%.1fs)...",
+                  n_chunks, WHISPER_CHUNK_SEC, real_dur)
+        for i in range(n_chunks):
+            chunk_start = i * WHISPER_CHUNK_SEC
+            chunk_dur = min(WHISPER_CHUNK_SEC, real_dur - chunk_start)
+            chunk_path = os.path.join(work, f"narr_chunk_{i:02d}.wav")
+            _extract_audio_chunk(narr_path, chunk_path, chunk_start, chunk_dur)
+            segments, info = _whisper_transcribe_segments(chunk_path)
+            chunk_segment_count = 0
+            for seg in segments:
+                text = seg.text.strip()
+                if text:
+                    all_segments.append((seg.start + chunk_start, seg.end + chunk_start, text))
+                    chunk_segment_count += 1
+            log.info("Chunk %d/%d [%.0fs-%.0fs]: %d segments, lang=%s (%.0f%%)",
+                      i + 1, n_chunks, chunk_start, chunk_start + chunk_dur,
+                      chunk_segment_count, info.language, info.language_probability * 100)
+    else:
+        log.info("Transcribing narration (Whisper base, single pass, CPU)...")
+        segments, info = _whisper_transcribe_segments(narr_path)
+        for seg in segments:
+            text = seg.text.strip()
+            if text:
+                all_segments.append((seg.start, seg.end, text))
+        log.info("Whisper: lang=%s (%.0f%%)", info.language, info.language_probability * 100)
 
     # MarginV=162 ≈ 15% from bottom (1080 × 0.15)
     # Outline=3 (3px black), Shadow=2, Alignment=2 (bottom-centre)
@@ -465,15 +525,12 @@ def _transcribe_to_ass(narr_path, work):
 
     dialogues = []
     last_end = 0.0
-    for seg in segments:
-        text = seg.text.strip()
-        if not text:
-            continue
+    for start, end, text in all_segments:
         text = _wrap_phrase(text, max_words=12)
         dialogues.append(
-            f"Dialogue: 0,{_tc(seg.start)},{_tc(seg.end)},Default,,0,0,0,,{{\\fad(200,200)}}{text}"
+            f"Dialogue: 0,{_tc(start)},{_tc(end)},Default,,0,0,0,,{{\\fad(200,200)}}{text}"
         )
-        last_end = seg.end
+        last_end = end
 
     if not dialogues:
         raise RuntimeError("Whisper returned 0 segments — audio may be silent")
@@ -483,14 +540,17 @@ def _transcribe_to_ass(narr_path, work):
         f.write(header + "\n".join(dialogues))
 
     log.info("ASS written: %d phrases → %s", len(dialogues), ass_path)
+    coverage = {"phrases": len(dialogues), "last_subtitle_end_sec": last_end,
+                "audio_duration_sec": real_dur, "coverage_gap_sec": None}
     if real_dur:
         coverage_gap = real_dur - last_end
+        coverage["coverage_gap_sec"] = round(coverage_gap, 1)
         log.info("Subtitle coverage: last subtitle ends at %.1fs, audio is %.1fs (gap %.1fs)",
                   last_end, real_dur, coverage_gap)
         if coverage_gap > 30:
             log.warning("Subtitles stop %.1fs before audio ends — Whisper may have "
                         "drifted/stopped early on this render.", coverage_gap)
-    return ass_path
+    return ass_path, coverage
 
 
 # ── CTA overlay (last 60 seconds) ─────────────────────────
