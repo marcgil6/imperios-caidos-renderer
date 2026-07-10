@@ -34,7 +34,7 @@ log = logging.getLogger("render")
 # Bump this string on every render.py change that affects output —
 # exposed via /health and in the /render response so a stale EasyPanel
 # deploy can be spotted without shell access to the container.
-BUILD_VERSION = "2026-07-09-thumbnail-arrow"
+BUILD_VERSION = "2026-07-10-no-arrow-vivid-gold"
 
 
 def _parse_creds(raw):
@@ -511,59 +511,16 @@ def _fit_font(draw, text, font_path, max_width, start_size, min_size):
 
 
 
-# Candidate positions (fraction of W, H) for the attention-marker arrow tip,
-# spread across the lower two-thirds of frame so they never collide with
-# the top text block. Marc picks whichever variant actually lands on the
-# "impossible detail" in that image.
-MARKER_POSITIONS = {
-    "A": (0.28, 0.64),
-    "B": (0.50, 0.70),
-    "C": (0.72, 0.64),
-}
-
-
-def _draw_attention_arrow(draw, tip_x, tip_y, W, length=140, shaft_width=16, head_length=52, head_width=46):
-    """High-contrast red arrow w/ white halo, pointing at the detail that justifies the title."""
-    RED = (255, 30, 20)
-    WHITE = (255, 255, 255)
-
-    # Tail sits diagonally above the tip; flip horizontally when the tip is
-    # near the right edge so the shaft never runs off-canvas.
-    dir_x = -1 if tip_x > W * 0.6 else 1
-    tail_x = tip_x - dir_x * length * 0.75
-    tail_y = tip_y - length * 0.75
-
-    dx, dy = tip_x - tail_x, tip_y - tail_y
-    dist = math.hypot(dx, dy) or 1.0
-    ux, uy = dx / dist, dy / dist
-    px, py = -uy, ux
-
-    for color, sw, hl, hw in (
-        (WHITE, shaft_width + 8, head_length + 10, head_width + 14),
-        (RED, shaft_width, head_length, head_width),
-    ):
-        base_x, base_y = tip_x - ux * hl, tip_y - uy * hl
-        draw.line([tail_x, tail_y, base_x, base_y], fill=color, width=sw)
-        draw.polygon(
-            [
-                (tip_x, tip_y),
-                (base_x + px * hw / 2, base_y + py * hw / 2),
-                (base_x - px * hw / 2, base_y - py * hw / 2),
-            ],
-            fill=color,
-        )
-
-
 def _generate_thumbnail(image_path, main_text, secondary_text, variant, out_path):
     """
-    1280x720 YouTube thumbnail: uppercase Anton text (top-center, gold w/
-    dark outline) + a bright red attention-marker ring over the "impossible
-    detail". All 3 variants share the same text layout; only the marker
-    position changes (see MARKER_POSITIONS) so the best composition can be
-    picked by eye.
+    1280x720 YouTube thumbnail: uppercase Anton text, top-center, vivid
+    yellow w/ dark outline. No attention marker — the background image must
+    carry the drama, and prompts must leave the top third free so text never
+    covers subjects. `variant` is kept for endpoint compatibility; all
+    variants currently render identically.
     """
     W, H = 1280, 720
-    GOLD = (247, 197, 72)
+    GOLD = (255, 222, 0)
     WHITE = (255, 255, 255)
     OUTLINE = (12, 10, 8)
 
@@ -593,9 +550,6 @@ def _generate_thumbnail(image_path, main_text, secondary_text, variant, out_path
         sec_y = main_y + main_size + 24
         draw.text((cx, sec_y), secondary_text, font=sec_font, fill=WHITE,
                   stroke_width=stroke_sec, stroke_fill=OUTLINE, anchor="ma", align="center")
-
-    mx_frac, my_frac = MARKER_POSITIONS.get(variant, MARKER_POSITIONS["B"])
-    _draw_attention_arrow(draw, int(W * mx_frac), int(H * my_frac), W)
 
     img.save(out_path, "JPEG", quality=92)
 
