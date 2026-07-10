@@ -13,9 +13,11 @@ COPY render.py .
 COPY music/ ./music/
 COPY fonts/ ./fonts/
 COPY branding/ ./branding/
+COPY sfx/ ./sfx/
 RUN ls -la /app/music/ && test -f /app/music/music_01_uprising.mp3
 RUN test -f /app/fonts/Anton-Regular.ttf
 RUN test -f /app/branding/logo_ep.png
+RUN test -f /app/sfx/riser_01_mixkit_1144.mp3
 
 EXPOSE 5000
 
