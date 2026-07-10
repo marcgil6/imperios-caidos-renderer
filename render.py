@@ -34,7 +34,7 @@ log = logging.getLogger("render")
 # Bump this string on every render.py change that affects output —
 # exposed via /health and in the /render response so a stale EasyPanel
 # deploy can be spotted without shell access to the container.
-BUILD_VERSION = "2026-07-10-no-arrow-vivid-gold"
+BUILD_VERSION = "2026-07-10-music-0.13"
 
 
 def _parse_creds(raw):
@@ -898,7 +898,7 @@ def _mix_audio(video_path, narration_path, music_path, output_path):
     fc = (
         "[1:a]aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo[narr];"
         "[2:a]aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo,"
-        "volume=0.1[mus];"
+        "volume=0.13[mus];"
         "[narr][mus]amix=inputs=2:duration=first:normalize=0[aout]"
     )
     _ffmpeg([
