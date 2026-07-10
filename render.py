@@ -34,7 +34,7 @@ log = logging.getLogger("render")
 # Bump this string on every render.py change that affects output —
 # exposed via /health and in the /render response so a stale EasyPanel
 # deploy can be spotted without shell access to the container.
-BUILD_VERSION = "2026-07-10-music-0.13"
+BUILD_VERSION = "2026-07-10-logo-gancho"
 
 
 def _parse_creds(raw):
@@ -127,6 +127,23 @@ MUSIC = {
     "end": MUSIC_DIR / "music_03_end.mp3",
 }
 
+def _find_logo():
+    candidates = [
+        Path("/app/branding/logo_ep.png"),
+        Path(__file__).resolve().parent / "branding" / "logo_ep.png",
+    ]
+    for c in candidates:
+        if c.exists():
+            return str(c)
+    return None
+
+LOGO_PATH = _find_logo()
+LOGO_WIDTH = 140        # px, height keeps aspect ratio
+LOGO_OPACITY = 0.7
+LOGO_MARGIN = 40        # px from top and right edges
+LOGO_HOOK_END = 30.0    # gancho = first 30s exactly (MasterTube block 1)
+LOGO_FADE = 0.5
+
 FPS = 25
 CROSSFADE_SEC = 1.0
 DEFAULT_DURATION = 12
@@ -147,6 +164,7 @@ def health():
         "music": music_ok,
         "build_version": BUILD_VERSION,
         "whisper_loaded": WHISPER_MODEL is not None,
+        "logo_found": LOGO_PATH is not None,
     })
 
 
@@ -790,35 +808,53 @@ def _build_cta_filters(duration_sec):
     ]
 
 
+def _build_logo_overlay():
+    """
+    Filter_complex snippet for the channel-logo watermark during the gancho
+    (first 30s only): small, top-right, semi-transparent, 0.5s fade in/out.
+    Returns (extra_inputs, pre_chain, src_pad) — the logo is input [1] and
+    must be overlaid BEFORE subtitles/CTA so text always draws on top.
+    """
+    if not LOGO_PATH:
+        return [], "", "[0:v]"
+    fade_out_start = LOGO_HOOK_END - LOGO_FADE
+    # -loop 1 makes the still PNG a timed stream so the fades can play out;
+    # -t bounds it just past the fade-out so the input isn't infinite.
+    extra_inputs = ["-loop", "1", "-t", str(LOGO_HOOK_END + 1), "-i", LOGO_PATH]
+    pre = (
+        f"[1:v]scale={LOGO_WIDTH}:-1,format=rgba,"
+        f"colorchannelmixer=aa={LOGO_OPACITY},"
+        f"fade=t=in:st=0:d={LOGO_FADE}:alpha=1,"
+        f"fade=t=out:st={fade_out_start}:d={LOGO_FADE}:alpha=1[logo];"
+        f"[0:v][logo]overlay=x=W-w-{LOGO_MARGIN}:y={LOGO_MARGIN}"
+        f":enable='between(t,0,{LOGO_HOOK_END})'[vlogo];"
+    )
+    return extra_inputs, pre, "[vlogo]"
+
+
 def _burn_subtitles_and_cta(video_path, ass_path, output_path, duration_sec=None):
     """
-    Single FFmpeg pass: burn ASS word subtitles + CTA drawtext overlay.
-    Uses filter_complex to safely chain ass= and multiple drawtext= filters.
+    Single FFmpeg pass: logo watermark (first 30s) + ASS subtitles + CTA
+    drawtext overlay. Uses filter_complex to safely chain everything.
     """
     cta = _build_cta_filters(duration_sec)
+    logo_inputs, logo_pre, src_pad = _build_logo_overlay()
 
+    chain = "ass=" + ass_path
     if cta:
-        # Chain: ass subtitles → CTA drawtext filters → output pad
-        chain = "ass=" + ass_path + "," + ",".join(cta)
-        _ffmpeg([
-            "-i", video_path,
-            "-filter_complex", f"[0:v]{chain}[vout]",
-            "-map", "[vout]",
-            "-map", "0:a",
-            "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
-            "-c:a", "copy",
-            "-movflags", "+faststart",
-            output_path,
-        ], timeout=1800)
-    else:
-        _ffmpeg([
-            "-i", video_path,
-            "-vf", f"ass={ass_path}",
-            "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
-            "-c:a", "copy",
-            "-movflags", "+faststart",
-            output_path,
-        ], timeout=1800)
+        chain += "," + ",".join(cta)
+
+    _ffmpeg([
+        "-i", video_path,
+        *logo_inputs,
+        "-filter_complex", f"{logo_pre}{src_pad}{chain}[vout]",
+        "-map", "[vout]",
+        "-map", "0:a",
+        "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+        "-c:a", "copy",
+        "-movflags", "+faststart",
+        output_path,
+    ], timeout=1800)
 
 
 # ── FFmpeg ─────────────────────────────────────────────────

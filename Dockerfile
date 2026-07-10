@@ -12,8 +12,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY render.py .
 COPY music/ ./music/
 COPY fonts/ ./fonts/
+COPY branding/ ./branding/
 RUN ls -la /app/music/ && test -f /app/music/music_01_uprising.mp3
 RUN test -f /app/fonts/Anton-Regular.ttf
+RUN test -f /app/branding/logo_ep.png
 
 EXPOSE 5000
 
