@@ -34,7 +34,7 @@ log = logging.getLogger("render")
 # Bump this string on every render.py change that affects output —
 # exposed via /health and in the /render response so a stale EasyPanel
 # deploy can be spotted without shell access to the container.
-BUILD_VERSION = "2026-07-10-teaser-gancho"
+BUILD_VERSION = "2026-07-11-teaser-voz"
 
 
 def _parse_creds(raw):
@@ -148,15 +148,21 @@ RISER_PATH = _find_riser()
 RISER_VOLUME = 0.9
 
 # ── Teaser (trailer-style cold open inside the MasterTube hook) ──
-# The whole hook block (teaser + spoken hook) must stay inside 30s,
-# so the teaser length is derived per video from the hook word count.
+# Silent mode: the whole hook block (teaser + spoken hook) must stay inside
+# HOOK_END, so the teaser length is derived from the hook word count.
+# Voiced mode (frases carry narration_file_id): the cuts follow the real
+# duration of each spoken frase and the hook block end becomes dynamic
+# (teaser + spoken hook, capped at HOOK_MAX).
 HOOK_END = 30.0
+HOOK_MAX = 40.0            # cap for the dynamic hook block (voiced teaser)
 TEASER_MIN = 4.0
 TEASER_MAX = 8.0
+TEASER_MAX_VOICED = 14.0   # voiced teaser budget; drops weakest frase beyond
 TEASER_FREEZE = 1.0        # final ambiguous still, no text
 TEASER_SILENCE = 0.5       # dead-silence beat at the end of the freeze
 TEASER_CUT_MIN = 0.30      # per text-fragment cut
 TEASER_CUT_MAX = 0.55
+TEASER_GAP = 0.30          # breath between voiced frases
 SPOKEN_RATE_FALLBACK = 2.3  # words/s of "El Faraón" if rate can't be derived
 
 MUSIC_BASE_VOL = 0.13      # channel standard for the whole video
@@ -258,7 +264,8 @@ def render():
       "drive_folder_id": "FOLDER_ID",
       "teaser": {                          # optional trailer-style cold open
         "frases": [{"fragmentos": ["Los jeroglíficos—", "..."],
-                     "image_file_id": "DRIVE_ID", "filename": "ITEM_4_IMG_3.jpg"}],
+                     "image_file_id": "DRIVE_ID", "filename": "ITEM_4_IMG_3.jpg",
+                     "narration_file_id": "DRIVE_ID"}],  # optional: voiced teaser
         "freeze_image_file_id": "DRIVE_ID",
         "gancho_words": 55, "words_total": 2560
       }
@@ -299,15 +306,30 @@ def render():
 
         narr_dur = _probe_duration(narr_path)
 
-        # 1b ── Teaser plan (optional)
+        # 1b ── Teaser plan (optional). Voiced frases (narration_file_id)
+        # are downloaded and probed first so the cuts follow the speech.
         teaser_cfg = data.get("teaser") or {}
+        for i, frase in enumerate(teaser_cfg.get("frases") or []):
+            vid = frase.get("narration_file_id")
+            if not vid:
+                continue
+            vp = os.path.join(work, f"teaser_voice_{i}.mp3")
+            try:
+                _download_drive(drive, vid, vp)
+                frase["voice_path"] = vp
+                frase["voice_dur"] = _probe_duration(vp)
+            except Exception as e:
+                log.warning("Teaser voice %d download failed (%s) — frase "
+                            "falls back to silent handling", i, e)
         teaser = _teaser_timing(teaser_cfg, narr_dur) if teaser_cfg else None
         teaser_sec = teaser["total"] if teaser else 0.0
+        hook_end = teaser["hook_end"] if teaser else HOOK_END
         if teaser:
-            log.info("Teaser: %d frases, cut=%.2fs, total=%.2fs (gancho est. %.1fs → "
-                     "hook block %.1fs)", len(teaser["frases"]), teaser["cut"],
-                     teaser_sec, teaser["gancho_sec_est"],
-                     teaser_sec + teaser["gancho_sec_est"])
+            log.info("Teaser (%s): %d frases, total=%.2fs (gancho est. %.1fs → "
+                     "hook block ends %.1fs)",
+                     "voiced" if teaser["voiced"] else "silent",
+                     len(teaser["frases"]), teaser_sec,
+                     teaser["gancho_sec_est"], hook_end)
 
         n_clips = len(images)
         if narr_dur and n_clips > 0:
@@ -370,16 +392,21 @@ def render():
             else:
                 freeze_path = teaser["frases"][-1]["image_path"]
             teaser_path = os.path.join(work, "teaser.mp4")
-            _build_teaser_video(work, teaser["frases"], freeze_path,
-                                teaser["cut"], teaser_path)
+            _build_teaser_video(work, teaser["frases"], freeze_path, teaser_path)
             with_teaser_path = os.path.join(work, "with_teaser.mp4")
             _concat_copy([teaser_path, joined_path], with_teaser_path, work)
             joined_path = with_teaser_path
 
         # 5 ── Mix audio
         log.info("Mixing audio...")
+        teaser_voice_path = None
+        if teaser and teaser["voiced"]:
+            teaser_voice_path = os.path.join(work, "teaser_voice.wav")
+            _build_teaser_voice(teaser["frases"], teaser_voice_path)
         mixed_path = os.path.join(work, "mixed.mp4")
-        _mix_audio(joined_path, narr_path, music_path, mixed_path, teaser_sec=teaser_sec)
+        _mix_audio(joined_path, narr_path, music_path, mixed_path,
+                   teaser_sec=teaser_sec, hook_end=hook_end,
+                   teaser_voice_path=teaser_voice_path)
 
         duration_sec = _probe_duration(mixed_path)
 
@@ -401,7 +428,8 @@ def render():
         if WHISPER_MODEL is not None:
             try:
                 ass_path, subtitle_coverage = _transcribe_to_ass(narr_path, work, offset=teaser_sec)
-                _burn_subtitles_and_cta(mixed_path, ass_path, out_path, duration_sec)
+                _burn_subtitles_and_cta(mixed_path, ass_path, out_path,
+                                        duration_sec, hook_end=hook_end)
                 log.info("Subtitles + CTA burned successfully.")
             except Exception as e:
                 log.warning("Subtitle/CTA burn failed (non-fatal): %s — using plain video", e)
@@ -460,6 +488,8 @@ def render():
             "teaser_duration_sec": teaser_sec or None,
             "teaser_hook_block_sec": (round(teaser_sec + teaser["gancho_sec_est"], 1)
                                       if teaser else None),
+            "teaser_voiced": teaser["voiced"] if teaser else None,
+            "hook_end_sec": hook_end if teaser else None,
         })
 
     except Exception as e:
@@ -888,37 +918,39 @@ def _build_cta_filters(duration_sec):
     ]
 
 
-def _build_logo_overlay():
+def _build_logo_overlay(hook_end=LOGO_HOOK_END):
     """
     Filter_complex snippet for the channel-logo watermark during the gancho
-    (first 30s only): small, top-right, semi-transparent, 0.5s fade in/out.
-    Returns (extra_inputs, pre_chain, src_pad) — the logo is input [1] and
-    must be overlaid BEFORE subtitles/CTA so text always draws on top.
+    (the hook block only): small, top-right, semi-transparent, 0.5s fade
+    in/out. Returns (extra_inputs, pre_chain, src_pad) — the logo is input
+    [1] and must be overlaid BEFORE subtitles/CTA so text always draws on
+    top.
     """
     if not LOGO_PATH:
         return [], "", "[0:v]"
-    fade_out_start = LOGO_HOOK_END - LOGO_FADE
+    fade_out_start = hook_end - LOGO_FADE
     # -loop 1 makes the still PNG a timed stream so the fades can play out;
     # -t bounds it just past the fade-out so the input isn't infinite.
-    extra_inputs = ["-loop", "1", "-t", str(LOGO_HOOK_END + 1), "-i", LOGO_PATH]
+    extra_inputs = ["-loop", "1", "-t", str(hook_end + 1), "-i", LOGO_PATH]
     pre = (
         f"[1:v]scale={LOGO_WIDTH}:-1,format=rgba,"
         f"colorchannelmixer=aa={LOGO_OPACITY},"
         f"fade=t=in:st=0:d={LOGO_FADE}:alpha=1,"
         f"fade=t=out:st={fade_out_start}:d={LOGO_FADE}:alpha=1[logo];"
         f"[0:v][logo]overlay=x=W-w-{LOGO_MARGIN}:y={LOGO_MARGIN}"
-        f":enable='between(t,0,{LOGO_HOOK_END})'[vlogo];"
+        f":enable='between(t,0,{hook_end})'[vlogo];"
     )
     return extra_inputs, pre, "[vlogo]"
 
 
-def _burn_subtitles_and_cta(video_path, ass_path, output_path, duration_sec=None):
+def _burn_subtitles_and_cta(video_path, ass_path, output_path,
+                            duration_sec=None, hook_end=LOGO_HOOK_END):
     """
-    Single FFmpeg pass: logo watermark (first 30s) + ASS subtitles + CTA
+    Single FFmpeg pass: logo watermark (hook block) + ASS subtitles + CTA
     drawtext overlay. Uses filter_complex to safely chain everything.
     """
     cta = _build_cta_filters(duration_sec)
-    logo_inputs, logo_pre, src_pad = _build_logo_overlay()
+    logo_inputs, logo_pre, src_pad = _build_logo_overlay(hook_end)
 
     chain = "ass=" + ass_path
     if cta:
@@ -942,10 +974,14 @@ def _burn_subtitles_and_cta(video_path, ass_path, output_path, duration_sec=None
 
 def _teaser_timing(teaser_cfg, narr_dur):
     """
-    Derive the teaser cut grid so that teaser + spoken hook fits in HOOK_END.
-    The spoken-hook length is estimated from its word count at the narration's
-    real words/s rate. Drops the weakest (first) frase if the budget is tight.
-    Returns {"frases", "cut", "total", "gancho_sec_est"} or None.
+    Derive the teaser timing. Silent mode: cut grid sized so that teaser +
+    spoken hook fits in HOOK_END (the spoken-hook length is estimated from
+    its word count at the narration's real words/s rate); drops the weakest
+    (first) frase if the budget is tight. Voiced mode (frases carry a probed
+    "voice_dur"): each frase block lasts its own narration + TEASER_GAP and
+    the hook block end becomes dynamic (capped at HOOK_MAX).
+    Returns {"frases", "total", "gancho_sec_est", "voiced", "hook_end"}
+    with a per-frase "cut" on each frase, or None.
     """
     frases = [f for f in (teaser_cfg.get("frases") or [])
               if f.get("fragmentos") and f.get("image_file_id")]
@@ -955,8 +991,27 @@ def _teaser_timing(teaser_cfg, narr_dur):
     gancho_words = float(teaser_cfg.get("gancho_words") or 0)
     rate = (words_total / narr_dur) if (words_total and narr_dur) else SPOKEN_RATE_FALLBACK
     gancho_sec = (gancho_words / rate) if gancho_words else 25.0
-    target = max(TEASER_MIN, min(TEASER_MAX, HOOK_END - gancho_sec - 0.2))
 
+    voiced = [f for f in frases if f.get("voice_dur")]
+    if voiced:
+        # Voiced: cuts follow the real speech; budget only trims extremes.
+        frases = voiced
+        while len(frases) > 1:
+            total = sum(f["voice_dur"] + TEASER_GAP for f in frases) + TEASER_FREEZE
+            if total <= TEASER_MAX_VOICED:
+                break
+            frases = frases[1:]   # ascending intensity: first one is weakest
+        for f in frases:
+            block = f["voice_dur"] + TEASER_GAP
+            f["cut"] = block / max(1, len(f["fragmentos"]))
+        total = round(sum(f["cut"] * len(f["fragmentos"]) for f in frases)
+                      + TEASER_FREEZE, 2)
+        hook_end = min(HOOK_MAX, max(HOOK_END, total + gancho_sec + 0.2))
+        return {"frases": frases, "total": total, "voiced": True,
+                "gancho_sec_est": round(gancho_sec, 1),
+                "hook_end": round(hook_end, 2)}
+
+    target = max(TEASER_MIN, min(TEASER_MAX, HOOK_END - gancho_sec - 0.2))
     cut = TEASER_CUT_MIN
     while frases:
         n_frags = sum(len(f["fragmentos"]) for f in frases)
@@ -965,10 +1020,12 @@ def _teaser_timing(teaser_cfg, narr_dur):
             break
         frases = frases[1:]   # ascending intensity: first one is the weakest
     cut = max(TEASER_CUT_MIN, min(TEASER_CUT_MAX, cut))
+    for f in frases:
+        f["cut"] = cut
     n_frags = sum(len(f["fragmentos"]) for f in frases)
     total = round(n_frags * cut + TEASER_FREEZE, 2)
-    return {"frases": frases, "cut": cut, "total": total,
-            "gancho_sec_est": round(gancho_sec, 1)}
+    return {"frases": frases, "total": total, "voiced": False,
+            "gancho_sec_est": round(gancho_sec, 1), "hook_end": HOOK_END}
 
 
 def _compose_teaser_frame(image_path, text, out_path):
@@ -993,10 +1050,11 @@ def _compose_teaser_frame(image_path, text, out_path):
     img.save(out_path, "JPEG", quality=92)
 
 
-def _build_teaser_video(work, frases, freeze_path, cut_dur, out_path):
+def _build_teaser_video(work, frases, freeze_path, out_path):
     """
-    Silent teaser video: rapid cuts (one per text fragment, each over its
-    frase's item image) + final ambiguous freeze frame with no text.
+    Teaser video track: cuts (one per text fragment, each over its frase's
+    item image, each frase paced by its own "cut" duration) + final
+    ambiguous freeze frame with no text.
     Encoded with the same params as the Ken Burns clips so the final
     concat with the main video can be a lossless stream copy.
     """
@@ -1006,7 +1064,7 @@ def _build_teaser_video(work, frases, freeze_path, cut_dur, out_path):
         for gi, frag in enumerate(frase["fragmentos"]):
             frame = os.path.join(work, f"teaser_frame_{fi}_{gi}.jpg")
             _compose_teaser_frame(frase["image_path"], frag, frame)
-            inputs += ["-loop", "1", "-t", f"{cut_dur:.3f}", "-i", frame]
+            inputs += ["-loop", "1", "-t", f"{frase['cut']:.3f}", "-i", frame]
             chains.append(f"[{idx}:v]setsar=1,fps={FPS}[v{idx}]")
             pads.append(f"[v{idx}]")
             idx += 1
@@ -1023,6 +1081,31 @@ def _build_teaser_video(work, frases, freeze_path, cut_dur, out_path):
         "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
         out_path,
     ], timeout=300)
+
+
+def _build_teaser_voice(frases, out_path):
+    """
+    Single voice track for the voiced teaser: each frase's narration in
+    order, TEASER_GAP of silence after every one, so the voice lines up
+    with its frase's visual block (which lasts voice_dur + TEASER_GAP).
+    """
+    fmt = "aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo"
+    inputs, chains, pads = [], [], []
+    for i, frase in enumerate(frases):
+        inputs += ["-i", frase["voice_path"]]
+        chains.append(f"[{i}:a]{fmt}[a{i}]")
+        chains.append(
+            f"anullsrc=r=44100:cl=stereo,atrim=duration={TEASER_GAP:.3f},{fmt}[g{i}]"
+        )
+        pads.append(f"[a{i}][g{i}]")
+    fc = (";".join(chains) + ";" + "".join(pads)
+          + f"concat=n={2 * len(frases)}:v=0:a=1[aout]")
+    _ffmpeg(inputs + [
+        "-filter_complex", fc,
+        "-map", "[aout]",
+        "-c:a", "pcm_s16le", "-f", "wav",
+        out_path,
+    ], timeout=120)
 
 
 def _concat_copy(paths, out_path, work):
@@ -1108,32 +1191,36 @@ def _xfade_batch(clips, output_path):
     ], timeout=1200)
 
 
-def _music_envelope(teaser_sec):
+def _music_envelope(teaser_sec, hook_end=HOOK_END):
     """
     Music volume over the video, per the hook dynamics spec:
       0 → teaser_end-0.5s : MUSIC_HOOK_VOL (trailer presence)
       teaser_end-0.5 → teaser_end : 0 (total-silence beat before narration)
-      teaser_end → 30s   : MUSIC_HOOK_VOL (hook narration)
-      30 → 30+fade       : linear crossfade down
+      teaser_end → hook_end : MUSIC_HOOK_VOL (hook narration)
+      hook_end → +fade   : linear crossfade down
       rest of the video  : MUSIC_BASE_VOL (unchanged channel standard)
+    hook_end is 30s in silent mode, dynamic (teaser + spoken hook) in
+    voiced mode.
     """
     g, b = MUSIC_HOOK_VOL, MUSIC_BASE_VOL
     dip_start = teaser_sec - TEASER_SILENCE
-    fade_end = HOOK_END + MUSIC_DUCK_FADE
+    fade_end = hook_end + MUSIC_DUCK_FADE
     return (
         f"if(lt(t,{dip_start:.3f}),{g},"
         f"if(lt(t,{teaser_sec:.3f}),0,"
-        f"if(lt(t,{HOOK_END}),{g},"
-        f"if(lt(t,{fade_end}),{g}-({g}-{b})*(t-{HOOK_END})/{MUSIC_DUCK_FADE},{b}))))"
+        f"if(lt(t,{hook_end}),{g},"
+        f"if(lt(t,{fade_end}),{g}-({g}-{b})*(t-{hook_end})/{MUSIC_DUCK_FADE},{b}))))"
     )
 
 
-def _mix_audio(video_path, narration_path, music_path, output_path, teaser_sec=0.0):
+def _mix_audio(video_path, narration_path, music_path, output_path,
+               teaser_sec=0.0, hook_end=HOOK_END, teaser_voice_path=None):
     """
     Narration + looped music. With a teaser, the narration is delayed by the
-    teaser length, the music follows the hook envelope (elevated 0-30s, dip
-    to silence right before the narration, crossfade back to base at 30s)
-    and the riser plays under the teaser cuts, peaking at the silence cut.
+    teaser length, the music follows the hook envelope (elevated until
+    hook_end, dip to silence right before the narration, crossfade back to
+    base at hook_end) and the riser plays under the teaser cuts, peaking at
+    the silence cut. A voiced teaser adds its own voice track at t=0.
     """
     fmt = "aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo"
     if teaser_sec <= 0:
@@ -1148,10 +1235,12 @@ def _mix_audio(video_path, narration_path, music_path, output_path, teaser_sec=0
         delay_ms = int(round(teaser_sec * 1000))
         fc = (
             f"[1:a]{fmt},adelay=delays={delay_ms}:all=1[narr];"
-            f"[2:a]{fmt},volume='{_music_envelope(teaser_sec)}':eval=frame[mus];"
+            f"[2:a]{fmt},volume='{_music_envelope(teaser_sec, hook_end)}':eval=frame[mus];"
         )
         extra_inputs = []
+        pads = "[narr][mus]"
         n_mix = 2
+        next_in = 3
         if RISER_PATH:
             hit = teaser_sec - TEASER_SILENCE   # riser must peak at the cut to silence
             riser_dur = _probe_duration(RISER_PATH) or 0
@@ -1159,10 +1248,17 @@ def _mix_audio(video_path, narration_path, music_path, output_path, teaser_sec=0
                 align = f"atrim=start={riser_dur - hit:.3f},asetpts=PTS-STARTPTS"
             else:
                 align = f"adelay=delays={int(round((hit - riser_dur) * 1000))}:all=1"
-            fc += f"[3:a]{fmt},{align},volume={RISER_VOLUME},apad[ris];"
-            extra_inputs = ["-i", RISER_PATH]
-            n_mix = 3
-        pads = "[narr][mus]" + ("[ris]" if n_mix == 3 else "")
+            fc += f"[{next_in}:a]{fmt},{align},volume={RISER_VOLUME},apad[ris];"
+            extra_inputs += ["-i", RISER_PATH]
+            pads += "[ris]"
+            n_mix += 1
+            next_in += 1
+        if teaser_voice_path:
+            fc += f"[{next_in}:a]{fmt},apad[tvoz];"
+            extra_inputs += ["-i", teaser_voice_path]
+            pads += "[tvoz]"
+            n_mix += 1
+            next_in += 1
         fc += f"{pads}amix=inputs={n_mix}:duration=first:normalize=0[aout]"
 
     _ffmpeg([
