@@ -34,7 +34,7 @@ log = logging.getLogger("render")
 # Bump this string on every render.py change that affects output —
 # exposed via /health and in the /render response so a stale EasyPanel
 # deploy can be spotted without shell access to the container.
-BUILD_VERSION = "2026-07-11-teaser-voz"
+BUILD_VERSION = "2026-07-11-teaser-preguntas"
 
 
 def _parse_creds(raw):
@@ -154,10 +154,11 @@ RISER_VOLUME = 0.9
 # duration of each spoken frase and the hook block end becomes dynamic
 # (teaser + spoken hook, capped at HOOK_MAX).
 HOOK_END = 30.0
-HOOK_MAX = 40.0            # cap for the dynamic hook block (voiced teaser)
+HOOK_MAX = 45.0            # cap for the dynamic hook block (voiced teaser)
 TEASER_MIN = 4.0
 TEASER_MAX = 8.0
-TEASER_MAX_VOICED = 14.0   # voiced teaser budget; drops weakest frase beyond
+TEASER_MAX_VOICED = 18.0   # voiced teaser budget (3 preguntas + cierre);
+                           # drops weakest frase beyond
 TEASER_FREEZE = 1.0        # final ambiguous still, no text
 TEASER_SILENCE = 0.5       # dead-silence beat at the end of the freeze
 TEASER_CUT_MIN = 0.30      # per text-fragment cut
