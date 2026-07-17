@@ -34,7 +34,7 @@ log = logging.getLogger("render")
 # Bump this string on every render.py change that affects output —
 # exposed via /health and in the /render response so a stale EasyPanel
 # deploy can be spotted without shell access to the container.
-BUILD_VERSION = "2026-07-11-teaser-preguntas"
+BUILD_VERSION = "2026-07-17-thumb-html"
 
 
 def _parse_creds(raw):
@@ -210,7 +210,16 @@ def health():
         "whisper_loaded": WHISPER_MODEL is not None,
         "logo_found": LOGO_PATH is not None,
         "riser_found": RISER_PATH is not None,
+        "playwright": _playwright_available(),
     })
+
+
+def _playwright_available():
+    try:
+        import playwright.sync_api  # noqa: F401
+        return True
+    except ImportError:
+        return False
 
 
 @app.route("/debug-env", methods=["GET"])
@@ -530,7 +539,14 @@ def thumbnail():
                                    (use this for the LLM-generated specific
                                    hook instead of a generic label)
       'record_id'        - optional
+
+    Alternative JSON mode (EP-08 template thumbnails):
+      POST application/json {"html": "<full template html>"} →
+      Playwright/Chromium renders it at 1280x720, waits for
+      body[data-render-ready="1"], captures #canvas, returns the PNG.
     """
+    if request.is_json:
+        return _thumbnail_from_html(request.get_json(silent=True) or {})
     if "image" not in request.files:
         return jsonify({"success": False, "error": "image file required (multipart 'image' field)"}), 400
     brief_text = request.form.get("brief_text", "")
@@ -590,6 +606,53 @@ def thumbnail_download(token):
 
 
 # ── Thumbnails ─────────────────────────────────────────────
+
+
+def _thumbnail_from_html(payload):
+    """EP-08: render the thumbnail template HTML to a 1280x720 PNG."""
+    html = payload.get("html", "")
+    if not html or not isinstance(html, str):
+        return jsonify({"success": False, "error": "html string required"}), 400
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError:
+        return jsonify({"success": False, "build_version": BUILD_VERSION,
+                        "error": "playwright not installed in this build"}), 501
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(
+                args=["--no-sandbox", "--disable-dev-shm-usage", "--force-color-profile=srgb"])
+            try:
+                page = browser.new_page(viewport={"width": 1280, "height": 720},
+                                        device_scale_factor=1)
+                page.set_content(html, wait_until="load")
+                page.wait_for_selector('body[data-render-ready="1"]', timeout=20000)
+                # data-render-ready fires on fonts.ready — the bg image (a
+                # remote URL) may still be loading, so wait for it too.
+                try:
+                    page.wait_for_function(
+                        "() => { const i = document.getElementById('bg');"
+                        " return !i || i.complete; }", timeout=20000)
+                except Exception:
+                    log.warning("HTML thumbnail: bg image still loading after 20s, capturing anyway")
+                bg_ok = page.evaluate(
+                    "() => { const i = document.getElementById('bg');"
+                    " return !!(i && i.complete && i.naturalWidth > 0); }")
+                canvas = page.query_selector("#canvas")
+                if canvas is None:
+                    return jsonify({"success": False, "error": "#canvas not found in html"}), 400
+                png = canvas.screenshot(type="png")
+            finally:
+                browser.close()
+        log.info("HTML thumbnail rendered: %d bytes, bg_loaded=%s", len(png), bg_ok)
+        resp = send_file(io.BytesIO(png), mimetype="image/png", as_attachment=True,
+                         download_name="thumbnail.png")
+        resp.headers["X-Build-Version"] = BUILD_VERSION
+        resp.headers["X-Bg-Loaded"] = "1" if bg_ok else "0"
+        return resp
+    except Exception as e:
+        log.exception("HTML thumbnail render failed")
+        return jsonify({"success": False, "error": str(e)}), 500
 
 
 def _parse_brief_miniatura(brief_text):
