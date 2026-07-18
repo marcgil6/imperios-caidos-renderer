@@ -8,6 +8,8 @@ RUN apt-get update \
 WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
+# Chromium para el modo HTML del endpoint /thumbnail (miniaturas EP-08)
+RUN playwright install --with-deps chromium
 
 COPY render.py .
 COPY music/ ./music/
