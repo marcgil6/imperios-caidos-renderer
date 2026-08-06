@@ -34,7 +34,7 @@ log = logging.getLogger("render")
 # Bump this string on every render.py change that affects output —
 # exposed via /health and in the /render response so a stale EasyPanel
 # deploy can be spotted without shell access to the container.
-BUILD_VERSION = "2026-08-06-sin-logo"
+BUILD_VERSION = "2026-08-06-kenburns-soft"
 
 
 def _parse_creds(raw):
@@ -196,7 +196,17 @@ LOGO_FADE = 0.5
 FPS = 25
 CROSSFADE_SEC = 1.0
 DEFAULT_DURATION = 12
-ZOOM_TOTAL = 0.03
+# Ken Burns suavizado (orden de Marc 2026-08-06: "que parezca más soft").
+# ZOOM_TOTAL 0.03 → 0.02: el recorrido del zoom es 1,5 veces más lento.
+# KB_SUPERSAMPLE arregla el TEMBLOR: zoompan trunca el origen del recorte a
+# píxeles ENTEROS de la imagen de entrada, así que con entrada de 1920 px el
+# encuadre se queda quieto y luego salta un píxel entero de salida. Ampliando
+# la entrada ×2 antes del zoompan, ese salto vale medio píxel de salida.
+# Medido sobre una imagen real de EP-04 (desplazamiento subpíxel por
+# correlación de fase, std de la aceleración): 0,479 → 0,111 px/f² (−77%).
+# Subir a ×3 o ×4 apenas mejora (0,095 / 0,085) y encarece el render.
+ZOOM_TOTAL = 0.02
+KB_SUPERSAMPLE = 2
 XFADE_BATCH = 10
 
 
@@ -1203,11 +1213,14 @@ def _concat_copy(paths, out_path, work):
 def _ken_burns(image_path, output_path, duration):
     frames = max(int(duration * FPS), 1)
     zf = ZOOM_TOTAL / frames
+    # La entrada se amplía KB_SUPERSAMPLE veces para que el redondeo a píxeles
+    # enteros de zoompan no se note como temblor (ver KB_SUPERSAMPLE arriba).
+    sw, sh = 1920 * KB_SUPERSAMPLE, 1080 * KB_SUPERSAMPLE
 
     vf = (
         "hflip,"
-        "scale=1920:1080:force_original_aspect_ratio=increase,"
-        "crop=1920:1080,setsar=1,"
+        f"scale={sw}:{sh}:force_original_aspect_ratio=increase,"
+        f"crop={sw}:{sh},setsar=1,"
         f"zoompan=z='min(zoom+{zf:.10f},1.5)'"
         f":x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'"
         f":d={frames}:s=1920x1080:fps={FPS}"
