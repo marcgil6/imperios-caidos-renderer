@@ -34,7 +34,7 @@ log = logging.getLogger("render")
 # Bump this string on every render.py change that affects output —
 # exposed via /health and in the /render response so a stale EasyPanel
 # deploy can be spotted without shell access to the container.
-BUILD_VERSION = "2026-07-17-thumb-html"
+BUILD_VERSION = "2026-08-06-sin-logo"
 
 
 def _parse_creds(raw):
@@ -182,6 +182,11 @@ def _find_logo():
     return None
 
 LOGO_PATH = _find_logo()
+# Marca de agua del canal RETIRADA del render (orden de Marc 2026-08-06): el
+# logo pasa a ser solo marca de agua nativa de YouTube, que se configura en el
+# canal y no toca el archivo. El PNG se conserva (avatar del canal) y el
+# overlay sigue en el código: LOGO_ENABLED=1 en el entorno lo devuelve.
+LOGO_ENABLED = os.environ.get("LOGO_ENABLED", "0") == "1"
 LOGO_WIDTH = 140        # px, height keeps aspect ratio
 LOGO_OPACITY = 0.7
 LOGO_MARGIN = 40        # px from top and right edges
@@ -209,6 +214,7 @@ def health():
         "build_version": BUILD_VERSION,
         "whisper_loaded": WHISPER_MODEL is not None,
         "logo_found": LOGO_PATH is not None,
+        "logo_enabled": LOGO_ENABLED,
         "riser_found": RISER_PATH is not None,
         "playwright": _playwright_available(),
     })
@@ -990,7 +996,9 @@ def _build_logo_overlay(hook_end=LOGO_HOOK_END):
     [1] and must be overlaid BEFORE subtitles/CTA so text always draws on
     top.
     """
-    if not LOGO_PATH:
+    if not LOGO_PATH or not LOGO_ENABLED:
+        # Sin logo: la entrada de vídeo entra directa a subtítulos/CTA, así que
+        # el filtergraph queda "[0:v]ass=...,drawtext=...[vout]" — bien formado.
         return [], "", "[0:v]"
     fade_out_start = hook_end - LOGO_FADE
     # -loop 1 makes the still PNG a timed stream so the fades can play out;
@@ -1010,8 +1018,9 @@ def _build_logo_overlay(hook_end=LOGO_HOOK_END):
 def _burn_subtitles_and_cta(video_path, ass_path, output_path,
                             duration_sec=None, hook_end=LOGO_HOOK_END):
     """
-    Single FFmpeg pass: logo watermark (hook block) + ASS subtitles + CTA
-    drawtext overlay. Uses filter_complex to safely chain everything.
+    Single FFmpeg pass: ASS subtitles + CTA drawtext overlay (+ logo
+    watermark only if LOGO_ENABLED). Uses filter_complex to safely chain
+    everything.
     """
     cta = _build_cta_filters(duration_sec)
     logo_inputs, logo_pre, src_pad = _build_logo_overlay(hook_end)
@@ -1020,10 +1029,16 @@ def _burn_subtitles_and_cta(video_path, ass_path, output_path,
     if cta:
         chain += "," + ",".join(cta)
 
+    filter_complex = f"{logo_pre}{src_pad}{chain}[vout]"
+    # Logged at INFO so the live filtergraph is auditable from the container
+    # logs — this is the pass that burns the subtitles.
+    log.info("Subs/CTA filter_complex (logo_enabled=%s): %s",
+             LOGO_ENABLED, filter_complex)
+
     _ffmpeg([
         "-i", video_path,
         *logo_inputs,
-        "-filter_complex", f"{logo_pre}{src_pad}{chain}[vout]",
+        "-filter_complex", filter_complex,
         "-map", "[vout]",
         "-map", "0:a",
         "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
