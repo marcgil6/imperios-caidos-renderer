@@ -24,6 +24,8 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
 from PIL import Image, ImageDraw, ImageFont
 
+import audio_mix
+
 app = Flask(__name__)
 logging.basicConfig(
     level=logging.INFO,
@@ -34,7 +36,7 @@ log = logging.getLogger("render")
 # Bump this string on every render.py change that affects output —
 # exposed via /health and in the /render response so a stale EasyPanel
 # deploy can be spotted without shell access to the container.
-BUILD_VERSION = "2026-08-06-kenburns-soft"
+BUILD_VERSION = "2026-08-27-audio-engine"
 
 
 def _parse_creds(raw):
@@ -134,6 +136,29 @@ MUSIC = {
     "end": MUSIC_DIR / "music_03_end.mp3",
 }
 
+# Biblioteca musical del canal: cualquier archivo de audio que se deje en
+# music/library/ con el mood en el nombre (mystery_low_01.mp3) entra solo,
+# sin tocar codigo. Las tres pistas historicas quedan como red de seguridad
+# si la carpeta esta vacia — llevan atribucion obligatoria (CC BY 4.0) y
+# Smart Content ID, asi que la biblioteca propia debe reemplazarlas.
+MUSIC_LIBRARY_DIR = MUSIC_DIR / "library"
+_SB = "released under CC-BY 4.0. www.scottbuckley.com.au"
+LEGACY_LIBRARY = [
+    {"id": "uprising", "path": str(MUSIC["uprising"]), "mood": "tension",
+     "intensity": "medium", "title": "Uprising", "lufs": -14.1,
+     "source": "Scott Buckley (CC BY 4.0)",
+     "attribution": "Uprising by Scott Buckley - " + _SB},
+    {"id": "the_long_dark", "path": str(MUSIC["the_long_dark"]), "mood": "dark",
+     "intensity": "low", "title": "The Long Dark", "lufs": -15.0,
+     "source": "Scott Buckley (CC BY 4.0)",
+     "attribution": "The Long Dark by Scott Buckley - " + _SB},
+    {"id": "end", "path": str(MUSIC["end"]), "mood": "emotional",
+     "intensity": "low", "title": "At The End Of All Things", "lufs": -13.8,
+     "source": "Scott Buckley (CC BY 4.0)",
+     "attribution": "At The End Of All Things by Scott Buckley - " + _SB},
+]
+_MUSIC_LUFS_CACHE = {}
+
 def _find_riser():
     candidates = [
         Path("/app/sfx/riser_01_mixkit_1144.mp3"),
@@ -227,6 +252,8 @@ def health():
         "logo_enabled": LOGO_ENABLED,
         "riser_found": RISER_PATH is not None,
         "playwright": _playwright_available(),
+        "music_library": audio_mix.library_summary(
+            audio_mix.load_library(str(MUSIC_LIBRARY_DIR), LEGACY_LIBRARY)),
     })
 
 
@@ -430,11 +457,17 @@ def render():
             teaser_voice_path = os.path.join(work, "teaser_voice.wav")
             _build_teaser_voice(teaser["frases"], teaser_voice_path)
         mixed_path = os.path.join(work, "mixed.mp4")
-        _mix_audio(joined_path, narr_path, music_path, mixed_path,
-                   teaser_sec=teaser_sec, hook_end=hook_end,
-                   teaser_voice_path=teaser_voice_path)
+        music_info = _mix_audio_v2(
+            work, joined_path, narr_path, mixed_path,
+            narr_dur=narr_dur, teaser_sec=teaser_sec, hook_end=hook_end,
+            teaser_voice_path=teaser_voice_path,
+            music_plan=data.get("music_plan"),
+            music_avoid=data.get("music_avoid") or [],
+            seed=data.get("airtable_id") or dynasty,
+            legacy_track=music_path)
 
         duration_sec = _probe_duration(mixed_path)
+        audio_qc = audio_mix.measure_loudness(mixed_path, timeout=900) or {}
 
         # QC ── duration drift check
         if narr_dur and duration_sec:
@@ -509,6 +542,17 @@ def render():
             "size_bytes": file_size,
             "images_count": len(img_list),
             "music_track": music_key,
+            "music_engine": music_info.get("engine"),
+            "music_tracks": music_info.get("tracks"),
+            "music_attribution": music_info.get("attribution"),
+            "music_warnings": music_info.get("warnings"),
+            "audio_qc": {
+                "integrated_lufs": audio_qc.get("lufs"),
+                "true_peak_dbtp": audio_qc.get("tp"),
+                "lra": audio_qc.get("lra"),
+                "voice_gain_db": music_info.get("voice_gain_db"),
+                "bed_gain_db": music_info.get("bed_gain_db"),
+            },
             "build_version": BUILD_VERSION,
             "subtitle_coverage": subtitle_coverage,
             "teaser_duration_sec": teaser_sec or None,
@@ -1281,6 +1325,80 @@ def _xfade_batch(clips, output_path):
         "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
         output_path,
     ], timeout=1200)
+
+
+def _mix_audio_v2(work, video_path, narration_path, output_path, *,
+                  narr_dur, teaser_sec, hook_end, teaser_voice_path,
+                  music_plan, music_avoid, seed, legacy_track):
+    """
+    Motor de audio nuevo (audio_mix): plan musical por tramos, cama con
+    crossfades, ducking con la narracion como llave y master a -14 LUFS.
+
+    Cualquier fallo cae a la mezcla clasica y, si esa tambien falla, a la
+    narracion sola: un problema con la musica no puede impedir que salga el
+    video. El motor usado se reporta en la respuesta (`music_engine`).
+    """
+    info = {"engine": "v2", "tracks": [], "attribution": [], "warnings": []}
+    try:
+        library = audio_mix.load_library(str(MUSIC_LIBRARY_DIR), LEGACY_LIBRARY)
+        segments = audio_mix.normalize_plan(music_plan, narr_dur or 0, teaser_sec)
+        chosen = audio_mix.select_tracks(library, segments,
+                                         avoid=music_avoid, seed=seed)
+        total = (narr_dur or 0) + teaser_sec
+        bed = audio_mix.build_bed(work, chosen, total, _MUSIC_LUFS_CACHE)
+
+        bm = audio_mix.measure_loudness(bed, timeout=900)
+        vm = audio_mix.measure_loudness(narration_path, timeout=900)
+        # Topes: si una medicion sale rara (pista corrupta, silencio) no se
+        # amplifica sin freno, se deja el nivel tal cual.
+        bed_gain = max(-24.0, min(24.0, audio_mix.MUSIC_OPEN_LUFS - bm["lufs"])) if bm else 0.0
+        voice_gain = max(-12.0, min(12.0, audio_mix.TARGET_VOICE_LUFS - vm["lufs"])) if vm else 0.0
+
+        audio_mix.mix_final(video_path, narration_path, bed, output_path,
+                            teaser_sec=teaser_sec, hook_end=hook_end,
+                            teaser_voice_path=teaser_voice_path,
+                            riser_path=RISER_PATH, riser_volume=RISER_VOLUME,
+                            bed_gain_db=bed_gain, voice_gain_db=voice_gain)
+
+        info["tracks"] = [
+            {"id": c["track"]["id"], "title": c["track"].get("title"),
+             "mood": c["mood"], "intensity": c["intensity"],
+             "start": round(c["start"], 1), "end": round(c["end"], 1)}
+            for c in chosen]
+        info["attribution"] = sorted({c["track"]["attribution"] for c in chosen
+                                      if c["track"].get("attribution")})
+        info["voice_gain_db"] = round(voice_gain, 2)
+        info["bed_gain_db"] = round(bed_gain, 2)
+        info["narration_lufs"] = round(vm["lufs"], 1) if vm else None
+        log.info("Audio v2: %d tramos, pistas=%s, voz %+.1f dB, cama %+.1f dB",
+                 len(chosen), [t["id"] for t in info["tracks"]],
+                 voice_gain, bed_gain)
+        return info
+    except Exception as e:
+        log.warning("Motor de audio v2 fallo (%s) - se usa la mezcla clasica", e)
+
+    info = {"engine": "legacy", "tracks": [], "attribution": [],
+            "warnings": ["motor v2 no disponible en este render"]}
+    try:
+        _mix_audio(video_path, narration_path, legacy_track, output_path,
+                   teaser_sec=teaser_sec, hook_end=hook_end,
+                   teaser_voice_path=teaser_voice_path)
+        return info
+    except Exception as e:
+        log.error("Mezcla clasica tambien fallo (%s) - video con narracion sola", e)
+
+    info["engine"] = "narration_only"
+    info["warnings"].append("sin musica: fallaron los dos motores de mezcla")
+    # El teaser va delante del video, asi que la narracion sigue necesitando
+    # su retardo aunque no haya musica: si no, se desincroniza.
+    delay = (f"adelay=delays={int(round(teaser_sec * 1000))}:all=1"
+             if teaser_sec > 0 else "anull")
+    _ffmpeg(["-i", video_path, "-i", narration_path,
+             "-filter_complex", f"[1:a]{delay}[aout]",
+             "-map", "0:v", "-map", "[aout]", "-c:v", "copy", "-c:a", "aac",
+             "-b:a", "192k", "-shortest", "-movflags", "+faststart",
+             output_path], timeout=600)
+    return info
 
 
 def _music_envelope(teaser_sec, hook_end=HOOK_END):

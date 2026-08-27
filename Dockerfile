@@ -12,6 +12,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 RUN playwright install --with-deps chromium
 
 COPY render.py .
+COPY audio_mix.py .
 COPY music/ ./music/
 COPY fonts/ ./fonts/
 COPY branding/ ./branding/
@@ -20,6 +21,7 @@ RUN ls -la /app/music/ && test -f /app/music/music_01_uprising.mp3
 RUN test -f /app/fonts/Anton-Regular.ttf
 RUN test -f /app/branding/logo_ep.png
 RUN test -f /app/sfx/riser_01_mixkit_1144.mp3
+RUN python -c "import audio_mix; print('audio_mix OK')"
 
 EXPOSE 5000
 
