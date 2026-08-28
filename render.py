@@ -667,11 +667,36 @@ def remix():
         measured = round((video_dur or 0) - (narr_dur or 0), 3)
         teaser_sec = data.get("teaser_sec")
         if teaser_sec is None:
-            teaser_sec = measured if measured > 0.2 else 0.0
+            if voiced:
+                # Hay teaser: la diferencia ES el teaser que va delante.
+                teaser_sec = measured if measured > 0.2 else 0.0
+            else:
+                # Sin voces de teaser (videos anteriores a esa funcion) la
+                # diferencia es cola de video / redondeo de crossfades, no un
+                # bloque delante: retrasar la narracion la desincronizaria de
+                # los subtitulos ya quemados. Se rellena por el final (abajo).
+                teaser_sec = 0.0
+                if measured > 0.2:
+                    log.info("Sin voces de teaser y %.2fs de diferencia: se "
+                             "trata como cola, la narracion NO se retrasa.",
+                             measured)
         teaser_sec = float(teaser_sec)
-        if abs(teaser_sec - measured) > 0.35:
+        if voiced and abs(teaser_sec - measured) > 0.35:
             log.warning("teaser_sec=%.2fs no cuadra con lo medido (%.2fs)",
                         teaser_sec, measured)
+
+        # El audio tiene que durar exactamente lo que el video: mix_final lleva
+        # -shortest, asi que si la narracion se queda corta se perderia la cola
+        # del video (CTA final). Se rellena con silencio al final.
+        falta = (video_dur or 0) - (teaser_sec + (narr_dur or 0))
+        if falta > 0.05:
+            padded = os.path.join(work, "narration_padded.wav")
+            _ffmpeg(["-i", narr_path, "-af", "apad",
+                     "-t", f"{(video_dur - teaser_sec):.3f}",
+                     "-c:a", "pcm_s16le", padded], timeout=600)
+            narr_path = padded
+            narr_dur = _probe_duration(narr_path) or (video_dur - teaser_sec)
+            log.info("Narracion rellenada con %.2fs de silencio final", falta)
 
         hook_end = data.get("hook_end")
         if hook_end is None:
