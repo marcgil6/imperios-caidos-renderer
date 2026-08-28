@@ -31,8 +31,11 @@ import subprocess
 
 # ── Objetivos de mezcla ────────────────────────────────────
 TARGET_VOICE_LUFS = -14.5   # YouTube normaliza a -14 LUFS; la voz manda
-MUSIC_OPEN_LUFS = -26.5     # cama sin voz encima (≈12 dB bajo la voz: el
-                            # equilibrio que Marc aprobó en julio con 0.13)
+MUSIC_OPEN_LUFS = -30.0     # cama sin voz encima (≈15,5 dB bajo la voz).
+                            # Era -26,5 hasta el 28/08/2026: Marc escuchó los
+                            # primeros remixes y pidió la música más discreta,
+                            # así que los -3,5 dB que se aplicaban a mano por
+                            # payload pasan a ser el valor por defecto.
 HOOK_BOOST_DB = 6.0         # presencia extra en el bloque de gancho
 LIMITER_TP = -1.0           # dBTP del master
 
