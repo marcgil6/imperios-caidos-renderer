@@ -36,7 +36,7 @@ log = logging.getLogger("render")
 # Bump this string on every render.py change that affects output —
 # exposed via /health and in the /render response so a stale EasyPanel
 # deploy can be spotted without shell access to the container.
-BUILD_VERSION = "2026-08-28-library-remix"
+BUILD_VERSION = "2026-08-28-bed-offset"
 
 
 def _parse_creds(raw):
@@ -472,7 +472,8 @@ def render():
             music_plan=data.get("music_plan"),
             music_avoid=data.get("music_avoid") or [],
             seed=data.get("airtable_id") or dynasty,
-            legacy_track=music_path)
+            legacy_track=music_path,
+            bed_offset_db=data.get("bed_offset_db") or 0.0)
 
         duration_sec = _probe_duration(mixed_path)
         audio_qc = audio_mix.measure_loudness(mixed_path, timeout=900) or {}
@@ -560,6 +561,7 @@ def render():
                 "lra": audio_qc.get("lra"),
                 "voice_gain_db": music_info.get("voice_gain_db"),
                 "bed_gain_db": music_info.get("bed_gain_db"),
+                "bed_offset_db": music_info.get("bed_offset_db"),
             },
             "build_version": BUILD_VERSION,
             "subtitle_coverage": subtitle_coverage,
@@ -722,7 +724,8 @@ def remix():
             music_plan=data.get("music_plan"),
             music_avoid=data.get("music_avoid") or [],
             seed=seed,
-            legacy_track=str(MUSIC["uprising"]))
+            legacy_track=str(MUSIC["uprising"]),
+            bed_offset_db=data.get("bed_offset_db") or 0.0)
         if music_info.get("engine") != "v2":
             log.warning("Remix sin motor v2 (%s): %s",
                         music_info.get("engine"), music_info.get("warnings"))
@@ -784,6 +787,7 @@ def remix():
                 "lra": audio_qc.get("lra"),
                 "voice_gain_db": music_info.get("voice_gain_db"),
                 "bed_gain_db": music_info.get("bed_gain_db"),
+                "bed_offset_db": music_info.get("bed_offset_db"),
             },
             "build_version": BUILD_VERSION,
         })
@@ -1555,7 +1559,8 @@ def _xfade_batch(clips, output_path):
 
 def _mix_audio_v2(work, video_path, narration_path, output_path, *,
                   narr_dur, teaser_sec, hook_end, teaser_voice_path,
-                  music_plan, music_avoid, seed, legacy_track):
+                  music_plan, music_avoid, seed, legacy_track,
+                  bed_offset_db=0.0):
     """
     Motor de audio nuevo (audio_mix): plan musical por tramos, cama con
     crossfades, ducking con la narracion como llave y master a -14 LUFS.
@@ -1578,6 +1583,11 @@ def _mix_audio_v2(work, video_path, narration_path, output_path, *,
         # Topes: si una medicion sale rara (pista corrupta, silencio) no se
         # amplifica sin freno, se deja el nivel tal cual.
         bed_gain = max(-24.0, min(24.0, audio_mix.MUSIC_OPEN_LUFS - bm["lufs"])) if bm else 0.0
+        # Ajuste fino por peticion: negativo = musica mas discreta. Se aplica
+        # DESPUES de la normalizacion, asi que el resultado es predecible
+        # (-3 dB aqui son -3 dB en la mezcla final).
+        bed_offset_db = max(-12.0, min(6.0, float(bed_offset_db or 0.0)))
+        bed_gain += bed_offset_db
         voice_gain = max(-12.0, min(12.0, audio_mix.TARGET_VOICE_LUFS - vm["lufs"])) if vm else 0.0
 
         audio_mix.mix_final(video_path, narration_path, bed, output_path,
@@ -1595,6 +1605,7 @@ def _mix_audio_v2(work, video_path, narration_path, output_path, *,
                                       if c["track"].get("attribution")})
         info["voice_gain_db"] = round(voice_gain, 2)
         info["bed_gain_db"] = round(bed_gain, 2)
+        info["bed_offset_db"] = round(bed_offset_db, 2)
         info["narration_lufs"] = round(vm["lufs"], 1) if vm else None
         log.info("Audio v2: %d tramos, pistas=%s, voz %+.1f dB, cama %+.1f dB",
                  len(chosen), [t["id"] for t in info["tracks"]],
