@@ -36,7 +36,7 @@ log = logging.getLogger("render")
 # Bump this string on every render.py change that affects output —
 # exposed via /health and in the /render response so a stale EasyPanel
 # deploy can be spotted without shell access to the container.
-BUILD_VERSION = "2026-08-28-library-yt-audio"
+BUILD_VERSION = "2026-08-28-library-remix"
 
 
 def _parse_creds(raw):
@@ -572,6 +572,199 @@ def render():
 
     except Exception as e:
         log.exception("Render failed")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+@app.route("/remix", methods=["POST"])
+def remix():
+    """
+    POST /remix — cambia SOLO la musica de un video ya renderizado.
+
+    Pensado para reparar videos ya publicados cuya cama musical genera
+    reclamaciones de Content ID: el stream de video se copia tal cual
+    (`-c:v copy` dentro de audio_mix.mix_final), asi que imagenes, Ken Burns,
+    subtitulos quemados y CTA quedan intactos y no se regenera NADA (ni
+    imagenes, ni narracion, ni voz del teaser). Solo se reconstruye el audio:
+    narracion original + voz del teaser (los mismos ficheros de Drive que uso
+    el render) + riser + cama nueva de la biblioteca, con el motor v2.
+
+    Body JSON:
+    {
+      "video_file_id": "DRIVE_ID",          # o "video_url"
+      "narration_file_id": "DRIVE_ID",      # o "narration_url"
+      "teaser": {"frases": [{"narration_file_id": "..."}, ...],
+                 "gancho_words": 55, "words_total": 2560},   # opcional
+      "teaser_sec": 17.8,        # opcional; por defecto se MIDE (video - narracion)
+      "hook_end": 42.75,         # opcional
+      "music_plan": [...], "music_avoid": [...],
+      "airtable_id": "rec...",   # semilla: mismo id -> misma musica
+      "drive_folder_id": "...", "google_credentials_json": "...",
+      "output_filename": "REMIX_rec....mp4"
+    }
+    """
+    data = request.get_json()
+    if not data:
+        return jsonify({"success": False, "error": "JSON body required"}), 400
+
+    folder_id = data.get("drive_folder_id")
+    google_creds = data.get("google_credentials_json")
+    seed = data.get("airtable_id") or data.get("output_filename") or "remix"
+
+    work = tempfile.mkdtemp(prefix="remix_")
+    log.info("Remix started: seed=%s", seed)
+    try:
+        drive = _get_drive_service(creds_override=google_creds)
+
+        # 1 ── Video ya renderizado (solo se usa su stream de video)
+        video_path = os.path.join(work, "source.mp4")
+        if data.get("video_file_id"):
+            log.info("Downloading rendered video from Drive...")
+            _download_drive(drive, data["video_file_id"], video_path)
+        elif data.get("video_url"):
+            _download_url(data["video_url"], video_path)
+        else:
+            return jsonify({"success": False,
+                            "error": "video_file_id or video_url required"}), 400
+        video_dur = _probe_duration(video_path)
+
+        # 2 ── Narracion original
+        narr_path = os.path.join(work, "narration.mp3")
+        if data.get("narration_file_id"):
+            _download_drive(drive, data["narration_file_id"], narr_path)
+        elif data.get("narration_url"):
+            _download_url(data["narration_url"], narr_path)
+        else:
+            return jsonify({"success": False,
+                            "error": "narration_file_id or narration_url required"}), 400
+        narr_dur = _probe_duration(narr_path)
+
+        # 3 ── Voz del teaser: los MISMOS mp3 que uso el render original.
+        teaser_cfg = data.get("teaser") or {}
+        frases = [f for f in (teaser_cfg.get("frases") or []) if f.get("narration_file_id")]
+        for i, frase in enumerate(frases):
+            vp = os.path.join(work, f"teaser_voice_{i}.mp3")
+            try:
+                _download_drive(drive, frase["narration_file_id"], vp)
+                frase["voice_path"] = vp
+                frase["voice_dur"] = _probe_duration(vp)
+            except Exception as e:
+                log.warning("Teaser voice %d download failed (%s)", i, e)
+                frase["voice_path"] = None
+
+        voiced = [f for f in frases if f.get("voice_path")]
+        teaser_voice_path = None
+        if voiced:
+            teaser_voice_path = os.path.join(work, "teaser_voice.wav")
+            _build_teaser_voice(voiced, teaser_voice_path)
+
+        # 4 ── teaser_sec: se MIDE del material real (video - narracion). Es lo
+        # que mantiene la narracion en sincronia con los subtitulos quemados;
+        # recalcularlo con _teaser_timing podria dar otro valor si el render
+        # original recorto alguna frase.
+        measured = round((video_dur or 0) - (narr_dur or 0), 3)
+        teaser_sec = data.get("teaser_sec")
+        if teaser_sec is None:
+            teaser_sec = measured if measured > 0.2 else 0.0
+        teaser_sec = float(teaser_sec)
+        if abs(teaser_sec - measured) > 0.35:
+            log.warning("teaser_sec=%.2fs no cuadra con lo medido (%.2fs)",
+                        teaser_sec, measured)
+
+        hook_end = data.get("hook_end")
+        if hook_end is None:
+            if teaser_cfg:
+                try:
+                    hook_end = _teaser_timing(teaser_cfg, narr_dur)["hook_end"]
+                except Exception:
+                    hook_end = None
+            if hook_end is None:
+                hook_end = min(HOOK_MAX, max(HOOK_END, teaser_sec + 25.0))
+        hook_end = float(hook_end)
+
+        log.info("Remix: video=%.1fs narracion=%.1fs teaser=%.2fs hook_end=%.1fs "
+                 "voces_teaser=%d", video_dur or 0, narr_dur or 0, teaser_sec,
+                 hook_end, len(voiced))
+
+        # 5 ── Mezcla nueva (mismo motor que el render; el video se copia)
+        out_path = os.path.join(work, "remix.mp4")
+        music_info = _mix_audio_v2(
+            work, video_path, narr_path, out_path,
+            narr_dur=narr_dur, teaser_sec=teaser_sec, hook_end=hook_end,
+            teaser_voice_path=teaser_voice_path,
+            music_plan=data.get("music_plan"),
+            music_avoid=data.get("music_avoid") or [],
+            seed=seed,
+            legacy_track=str(MUSIC["uprising"]))
+        if music_info.get("engine") != "v2":
+            log.warning("Remix sin motor v2 (%s): %s",
+                        music_info.get("engine"), music_info.get("warnings"))
+
+        duration_sec = _probe_duration(out_path)
+        audio_qc = audio_mix.measure_loudness(out_path, timeout=900) or {}
+        drift = abs((duration_sec or 0) - (video_dur or 0))
+        if drift > 1.0:
+            log.warning("Remix duracion %.1fs vs original %.1fs (drift %.1fs)",
+                        duration_sec or 0, video_dur or 0, drift)
+
+        out_name = data.get("output_filename") or f"REMIX_{seed}.mp4"
+        if not out_name.lower().endswith(".mp4"):
+            out_name += ".mp4"
+
+        token = str(uuid.uuid4())
+        persistent = RENDERS_DIR / f"{token}.mp4"
+        shutil.move(out_path, str(persistent))
+        file_size = os.path.getsize(str(persistent))
+
+        drive_file_id = None
+        drive_webViewLink = None
+        if folder_id:
+            try:
+                from googleapiclient.http import MediaFileUpload
+                media = MediaFileUpload(str(persistent), mimetype="video/mp4",
+                                        resumable=True, chunksize=10 * 1024 * 1024)
+                result = drive.files().create(
+                    body={"name": out_name, "parents": [folder_id]},
+                    media_body=media, fields="id,webViewLink").execute()
+                drive_file_id = result.get("id")
+                drive_webViewLink = result.get("webViewLink")
+                persistent.unlink()
+                log.info("Remix subido a Drive: id=%s", drive_file_id)
+            except Exception as e:
+                log.error("Drive upload failed (queda en /download): %s", e)
+
+        return jsonify({
+            "success": True,
+            "download_token": token,
+            "drive_file_id": drive_file_id,
+            "drive_webViewLink": drive_webViewLink,
+            "filename": out_name,
+            "duration_sec": duration_sec,
+            "source_duration_sec": video_dur,
+            "duration_drift_sec": round(drift, 2),
+            "narration_duration_sec": narr_dur,
+            "teaser_sec": teaser_sec,
+            "hook_end_sec": hook_end,
+            "teaser_voices": len(voiced),
+            "size_bytes": file_size,
+            "music_engine": music_info.get("engine"),
+            "music_tracks": music_info.get("tracks"),
+            "music_attribution": music_info.get("attribution"),
+            "music_warnings": music_info.get("warnings"),
+            "audio_qc": {
+                "integrated_lufs": audio_qc.get("lufs"),
+                "true_peak_dbtp": audio_qc.get("tp"),
+                "lra": audio_qc.get("lra"),
+                "voice_gain_db": music_info.get("voice_gain_db"),
+                "bed_gain_db": music_info.get("bed_gain_db"),
+            },
+            "build_version": BUILD_VERSION,
+        })
+
+    except Exception as e:
+        log.exception("Remix failed")
         return jsonify({"success": False, "error": str(e)}), 500
 
     finally:
