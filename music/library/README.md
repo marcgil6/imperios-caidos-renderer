@@ -1,5 +1,14 @@
 # Biblioteca musical del canal
 
+**Estado (2026-08-28): LLENA — 24 pistas, 3 por mood.** Todas salen de la
+Biblioteca de audio de YouTube con el filtro **"No requiere atribucion"**
+(licencia YouTube, sin Content ID), descargadas el 28/08/2026 y
+recodificadas a MP3 192 kbps 44,1 kHz estereo. `library.json` lleva titulo,
+artista, duracion y el LUFS ya medido de cada una (ahorra una medicion por
+render). Las tres pistas de Scott Buckley se retiraron del repo en el mismo
+commit: su Smart Content ID reclamaba los videos aunque el credito
+estuviera puesto.
+
 Todo archivo de audio que se deje en esta carpeta entra automáticamente en el
 sistema. **No hay que tocar código ni desplegar nada más que la imagen.**
 
