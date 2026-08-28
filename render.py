@@ -36,7 +36,7 @@ log = logging.getLogger("render")
 # Bump this string on every render.py change that affects output —
 # exposed via /health and in the /render response so a stale EasyPanel
 # deploy can be spotted without shell access to the container.
-BUILD_VERSION = "2026-08-27-audio-engine"
+BUILD_VERSION = "2026-08-28-library-yt-audio"
 
 
 def _parse_creds(raw):
@@ -125,37 +125,45 @@ def _find_music_dir():
         Path(__file__).resolve().parent / "music",
     ]
     for d in candidates:
-        if (d / "music_01_uprising.mp3").exists():
+        if (d / "library").is_dir():
             return d
     return candidates[0]
 
 MUSIC_DIR = _find_music_dir()
-MUSIC = {
-    "uprising": MUSIC_DIR / "music_01_uprising.mp3",
-    "the_long_dark": MUSIC_DIR / "music_02_the_long_dark.mp3",
-    "end": MUSIC_DIR / "music_03_end.mp3",
-}
 
 # Biblioteca musical del canal: cualquier archivo de audio que se deje en
 # music/library/ con el mood en el nombre (mystery_low_01.mp3) entra solo,
-# sin tocar codigo. Las tres pistas historicas quedan como red de seguridad
-# si la carpeta esta vacia — llevan atribucion obligatoria (CC BY 4.0) y
-# Smart Content ID, asi que la biblioteca propia debe reemplazarlas.
+# sin tocar codigo. Desde el 2026-08-28 la biblioteca es la UNICA fuente de
+# musica: 24 pistas de la Biblioteca de audio de YouTube con el filtro
+# "no requiere atribucion" (licencia YouTube, sin Content ID). Las tres
+# pistas de Scott Buckley que vivian aqui se retiraron: su Smart Content ID
+# reclamaba los videos aunque el credito estuviera puesto, y la reclamacion
+# habia que levantarla a mano vídeo por vídeo.
 MUSIC_LIBRARY_DIR = MUSIC_DIR / "library"
-_SB = "released under CC-BY 4.0. www.scottbuckley.com.au"
+
+# Las claves se conservan porque el payload de EP-07 puede traer
+# `audio.music_track`; ahora apuntan a pistas de la biblioteca.
+MUSIC = {
+    "uprising": MUSIC_LIBRARY_DIR / "tension_medium_02.mp3",
+    "the_long_dark": MUSIC_LIBRARY_DIR / "dark_low_01.mp3",
+    "end": MUSIC_LIBRARY_DIR / "emotional_low_01.mp3",
+}
+
+# Red de seguridad si music/library/ llegara vacia (imagen mal construida).
 LEGACY_LIBRARY = [
-    {"id": "uprising", "path": str(MUSIC["uprising"]), "mood": "tension",
-     "intensity": "medium", "title": "Uprising", "lufs": -14.1,
-     "source": "Scott Buckley (CC BY 4.0)",
-     "attribution": "Uprising by Scott Buckley - " + _SB},
-    {"id": "the_long_dark", "path": str(MUSIC["the_long_dark"]), "mood": "dark",
-     "intensity": "low", "title": "The Long Dark", "lufs": -15.0,
-     "source": "Scott Buckley (CC BY 4.0)",
-     "attribution": "The Long Dark by Scott Buckley - " + _SB},
-    {"id": "end", "path": str(MUSIC["end"]), "mood": "emotional",
-     "intensity": "low", "title": "At The End Of All Things", "lufs": -13.8,
-     "source": "Scott Buckley (CC BY 4.0)",
-     "attribution": "At The End Of All Things by Scott Buckley - " + _SB},
+    {"id": "tension_medium_02", "path": str(MUSIC["uprising"]),
+     "mood": "tension", "intensity": "medium", "title": "Standoff",
+     "lufs": -12.19, "source": "YouTube Audio Library",
+     "attribution": None},
+    {"id": "dark_low_01", "path": str(MUSIC["the_long_dark"]),
+     "mood": "dark", "intensity": "low", "title": "Surface of the Moon",
+     "lufs": -16.29, "source": "YouTube Audio Library",
+     "attribution": None},
+    {"id": "emotional_low_01", "path": str(MUSIC["end"]),
+     "mood": "emotional", "intensity": "low",
+     "title": "Things I Could Have Said",
+     "lufs": -11.84, "source": "YouTube Audio Library",
+     "attribution": None},
 ]
 _MUSIC_LUFS_CACHE = {}
 
