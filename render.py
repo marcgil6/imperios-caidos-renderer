@@ -36,7 +36,7 @@ log = logging.getLogger("render")
 # Bump this string on every render.py change that affects output —
 # exposed via /health and in the /render response so a stale EasyPanel
 # deploy can be spotted without shell access to the container.
-BUILD_VERSION = "2026-08-28-bed-offset"
+BUILD_VERSION = "2026-08-28-bed-30lufs"
 
 
 def _parse_creds(raw):
