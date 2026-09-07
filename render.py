@@ -36,7 +36,7 @@ log = logging.getLogger("render")
 # Bump this string on every render.py change that affects output —
 # exposed via /health and in the /render response so a stale EasyPanel
 # deploy can be spotted without shell access to the container.
-BUILD_VERSION = "2026-08-28-bed-30lufs"
+BUILD_VERSION = "2026-09-07-ritmo-calmado"
 
 
 def _parse_creds(raw):
@@ -231,6 +231,9 @@ CROSSFADE_SEC = 1.0
 DEFAULT_DURATION = 12
 # Ken Burns suavizado (orden de Marc 2026-08-06: "que parezca más soft").
 # ZOOM_TOTAL 0.03 → 0.02: el recorrido del zoom es 1,5 veces más lento.
+# 2026-09-07 (ritmo calmado): 0.02 → 0.01, la mitad de velocidad de movimiento.
+# zf = ZOOM_TOTAL / frames, así que el recorrido ya se reparte por la duración
+# del clip: halvar ZOOM_TOTAL halva los px/s reales sea cual sea la escena.
 # KB_SUPERSAMPLE arregla el TEMBLOR: zoompan trunca el origen del recorte a
 # píxeles ENTEROS de la imagen de entrada, así que con entrada de 1920 px el
 # encuadre se queda quieto y luego salta un píxel entero de salida. Ampliando
@@ -238,7 +241,7 @@ DEFAULT_DURATION = 12
 # Medido sobre una imagen real de EP-04 (desplazamiento subpíxel por
 # correlación de fase, std de la aceleración): 0,479 → 0,111 px/f² (−77%).
 # Subir a ×3 o ×4 apenas mejora (0,095 / 0,085) y encarece el render.
-ZOOM_TOTAL = 0.02
+ZOOM_TOTAL = 0.01
 KB_SUPERSAMPLE = 2
 XFADE_BATCH = 10
 
@@ -396,7 +399,12 @@ def render():
         if narr_dur and n_clips > 0:
             crossfades_total = (n_clips - 1) * CROSSFADE_SEC
             per_clip = (narr_dur + crossfades_total) / n_clips
-            per_clip = max(per_clip, 5.0)
+            # Suelo de duración por escena. 5,0s era el valor histórico; con el
+            # ritmo calmado (2026-09-07) ninguna imagen puede estar menos de 8s
+            # en pantalla. Nota: este cálculo IGNORA a propósito las duraciones
+            # que manda EP-07 y las recalcula contra la narración real, para que
+            # vídeo y audio no se desincronicen.
+            per_clip = max(per_clip, 8.0)
             log.info("Narration: %.1fs (%.1fmin) → %d clips × %.2fs each",
                      narr_dur, narr_dur / 60, n_clips, per_clip)
             for img in images:
