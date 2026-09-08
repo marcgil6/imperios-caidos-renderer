@@ -25,6 +25,10 @@ from googleapiclient.http import MediaIoBaseDownload
 from PIL import Image, ImageDraw, ImageFont
 
 import audio_mix
+from text_layer import (TextLayerError, build_ass, build_video_filters,
+                        parse_text_layer, words_from_payload)
+from text_layer.alignment import align_script_to_words, words_from_whisper
+from text_layer.burn import find_fonts_dir
 
 app = Flask(__name__)
 logging.basicConfig(
@@ -36,7 +40,7 @@ log = logging.getLogger("render")
 # Bump this string on every render.py change that affects output —
 # exposed via /health and in the /render response so a stale EasyPanel
 # deploy can be spotted without shell access to the container.
-BUILD_VERSION = "2026-09-07-ritmo-calmado"
+BUILD_VERSION = "2026-09-08-capa-texto"
 
 
 def _parse_creds(raw):
@@ -259,6 +263,8 @@ def health():
         "music": music_ok,
         "build_version": BUILD_VERSION,
         "whisper_loaded": WHISPER_MODEL is not None,
+        "fonts_dir": find_fonts_dir(),
+        "fonts": _fonts_report(),
         "logo_found": LOGO_PATH is not None,
         "logo_enabled": LOGO_ENABLED,
         "riser_found": RISER_PATH is not None,
@@ -311,6 +317,10 @@ def test_subs():
         "whisper_loaded": whisper_ok,
         "libass_available": libass_ok,
         "liberation_sans_found": font_ok,
+        # Las cuatro caras de la capa de texto. Cualquiera en false significa
+        # que libass caeria en una fuente de sustitucion sin avisar.
+        "text_layer_fonts": _fonts_report(),
+        "fonts_dir": find_fonts_dir(),
         "fc_list_output": fc.stdout[:500],
     })
 
@@ -326,6 +336,15 @@ def render():
       "music_track": "uprising",
       "dynasty_name": "enigmas",
       "drive_folder_id": "FOLDER_ID",
+      # Capa de texto (opcional). Si no viene, el render se comporta
+      # exactamente como antes: subtitulo Whisper + Liberation Sans.
+      "text_layer": {"version": 1, "cues": [...], "b_style": {...}},
+      "alignment": {"words": [{"word": "El", "start": 0.31, "end": 0.44}]},
+      #   o el objeto crudo de ElevenLabs /with-timestamps, o una URL a un JSON.
+      #   Si falta, se calcula con Whisper (word_timestamps=True).
+      "script_text": "El 2 de julio de 1937...",
+      #   guion real: hace que el subtitulo B muestre el guion y no lo que
+      #   "oyo" Whisper. Sin el, se avisa por log y se usa la transcripcion.
       "teaser": {                          # optional trailer-style cold open
         "frases": [{"fragmentos": ["Los jeroglíficos—", "..."],
                      "image_file_id": "DRIVE_ID", "filename": "ITEM_4_IMG_3.jpg",
@@ -497,11 +516,28 @@ def render():
                     f"{narr_dur + teaser_sec:.1f}s (drift {drift:.1f}s > 5s)."
                 )
 
-        # 6 ── Subtitles + CTA overlay
+        # 6 ── Capa de texto (o subtitulo clasico) + CTA overlay
         out_name = f"{dynasty}_{int(time.time())}.mp4"
         out_path = os.path.join(work, out_name)
         subtitle_coverage = None
-        if WHISPER_MODEL is not None:
+        text_layer_report = None
+
+        if data.get("text_layer"):
+            # Camino nuevo: B documental + golpes C + rotulos E, con el estilo
+            # del canal (Cormorant/Anton, sin borde negro). Un JSON invalido
+            # tiene que ABORTAR: si cayera al subtitulo viejo, el video saldria
+            # con el estilo que este trabajo vino a eliminar y nadie se
+            # enteraria hasta verlo.
+            ass_path, pre_filters, text_layer_report = _build_text_layer(
+                narr_path, work, data, offset=teaser_sec)
+            _burn_subtitles_and_cta(mixed_path, ass_path, out_path, duration_sec,
+                                    hook_end=hook_end, pre_filters=pre_filters,
+                                    fonts_dir=text_layer_report["fonts_dir"])
+            log.info("Capa de texto + CTA quemadas.")
+        elif WHISPER_MODEL is not None:
+            # Camino clasico, intacto: Liberation Sans con borde negro. Se
+            # mantiene para que un render sin `text_layer` se comporte
+            # exactamente igual que antes de este cambio.
             try:
                 ass_path, subtitle_coverage = _transcribe_to_ass(narr_path, work, offset=teaser_sec)
                 _burn_subtitles_and_cta(mixed_path, ass_path, out_path,
@@ -573,12 +609,18 @@ def render():
             },
             "build_version": BUILD_VERSION,
             "subtitle_coverage": subtitle_coverage,
+            "text_layer": text_layer_report,
             "teaser_duration_sec": teaser_sec or None,
             "teaser_hook_block_sec": (round(teaser_sec + teaser["gancho_sec_est"], 1)
                                       if teaser else None),
             "teaser_voiced": teaser["voiced"] if teaser else None,
             "hook_end_sec": hook_end if teaser else None,
         })
+
+    except TextLayerError as e:
+        log.error("text_layer invalido: %s", e)
+        return jsonify({"success": False, "error": str(e),
+                        "error_type": "text_layer"}), 400
 
     except Exception as e:
         log.exception("Render failed")
@@ -818,6 +860,95 @@ def download_render(token):
     log.info("Serving render token=%s", token)
     return send_file(str(path), mimetype="video/mp4", as_attachment=True,
                      download_name=f"{token}.mp4")
+
+
+@app.route("/text-layer/preview", methods=["POST"])
+def text_layer_preview():
+    """
+    POST /text-layer/preview — un PNG por cue, en su instante medio.
+
+    Sirve para revisar la capa de texto de un video sin renderizar los 20
+    minutos. Body:
+    {
+      "text_layer": {...},                  # obligatorio
+      "alignment": {...} | "https://...",   # obligatorio (aqui no hay audio)
+      "background": "#1A1408" | "https://..." | {"file_id": "..."},
+      "cues": ["c01", "q02"]                # opcional: solo estos
+    }
+    Responde {"success": true, "download_token": "...", "frames": [...]}.
+    El ZIP se recoge en /text-layer/preview-download/<token>.
+    """
+    data = request.get_json() or {}
+    if not data.get("text_layer"):
+        return jsonify({"success": False, "error": "text_layer requerido"}), 400
+    if not data.get("alignment"):
+        return jsonify({"success": False, "error":
+                        "alignment requerido: sin audio no hay de donde sacar los tiempos"}), 400
+
+    work = tempfile.mkdtemp(prefix="preview_")
+    try:
+        layer = parse_text_layer(data["text_layer"])
+        words, _ = _words_for_text_layer(None, work, data)
+        ass_text, report = build_ass(layer, words, offset=0.0)
+        ass_path = os.path.join(work, "layer.ass")
+        with open(ass_path, "w", encoding="utf-8") as f:
+            f.write(ass_text)
+
+        # Fondo: un color plano, una imagen de Drive o una URL.
+        bg = data.get("background") or "#1A1408"
+        bg_input = None
+        if isinstance(bg, dict) and bg.get("file_id"):
+            bg_input = os.path.join(work, "bg.jpg")
+            _download_drive(_get_drive_service(data.get("google_credentials_json")),
+                            bg["file_id"], bg_input)
+        elif isinstance(bg, str) and bg.startswith("http"):
+            bg_input = os.path.join(work, "bg.jpg")
+            _download_url(bg, bg_input)
+
+        wanted = set(data.get("cues") or [])
+        filters = build_video_filters(ass_path, report["black_backgrounds"],
+                                      fonts_dir=find_fonts_dir())
+        chain = ",".join(filters)
+        end = report["last_event_end_sec"] + 2
+
+        frames, out_dir = [], os.path.join(work, "frames")
+        os.makedirs(out_dir, exist_ok=True)
+        for cue in sorted(layer.overlays, key=lambda c: c.start):
+            if wanted and cue.id not in wanted:
+                continue
+            t = (cue.start + cue.end) / 2
+            png = os.path.join(out_dir, f"{cue.id}.png")
+            source = (["-loop", "1", "-t", str(end), "-i", bg_input] if bg_input
+                      else ["-f", "lavfi", "-i", f"color=c={bg}:s=1920x1080:d={end}:r=25"])
+            _ffmpeg([*source, "-vf", chain, "-ss", f"{t:.3f}",
+                     "-frames:v", "1", png], timeout=180)
+            frames.append({"cue": cue.id, "type": cue.type, "t": round(t, 2),
+                           "start": round(cue.start, 2), "end": round(cue.end, 2)})
+
+        token = str(uuid.uuid4())
+        zip_base = str(THUMBS_DIR / token)
+        shutil.make_archive(zip_base, "zip", out_dir)
+        return jsonify({"success": True, "download_token": token,
+                        "frames": frames, "text_layer": report,
+                        "build_version": BUILD_VERSION})
+
+    except TextLayerError as e:
+        log.error("preview: text_layer invalido: %s", e)
+        return jsonify({"success": False, "error": str(e), "error_type": "text_layer"}), 400
+    except Exception as e:
+        log.exception("preview failed")
+        return jsonify({"success": False, "error": str(e)}), 500
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+@app.route("/text-layer/preview-download/<token>", methods=["GET"])
+def text_layer_preview_download(token):
+    path = THUMBS_DIR / f"{token}.zip"
+    if not path.exists():
+        return jsonify({"success": False, "error": "token no encontrado"}), 404
+    return send_file(str(path), mimetype="application/zip", as_attachment=True,
+                     download_name=f"text_layer_preview_{token[:8]}.zip")
 
 
 @app.route("/thumbnail", methods=["POST"])
@@ -1230,6 +1361,87 @@ def _transcribe_to_ass(narr_path, work, offset=0.0):
     return ass_path, coverage
 
 
+# ── Capa de texto (B documental / C golpe / E rotulo) ──────
+
+
+def _words_for_text_layer(narr_path, work, data):
+    """Alineacion por palabras: la del payload si viene, si no Whisper.
+
+    Via de produccion: EP-03B pedira a ElevenLabs
+    `POST /v1/text-to-speech/{voice_id}/with-timestamps` y mandara el objeto
+    `alignment` tal cual. Via de respaldo y de test: faster-whisper con
+    `word_timestamps=True`, coste 0.
+    """
+    alignment = data.get("alignment")
+    if isinstance(alignment, str):
+        path = os.path.join(work, "alignment.json")
+        _download_url(alignment, path)
+        with open(path, encoding="utf-8") as f:
+            alignment = json.load(f)
+    if alignment:
+        words = words_from_payload(alignment)
+        log.info("Alineacion recibida en el payload: %d palabras", len(words))
+    else:
+        if WHISPER_MODEL is None:
+            raise TextLayerError(
+                "No hay alignment en el payload y Whisper no esta cargado: "
+                "la capa de texto no se puede colocar en el tiempo."
+            )
+        log.info("Sin alignment en el payload — transcribiendo con Whisper "
+                 "(word_timestamps=True)...")
+        words, info = words_from_whisper(WHISPER_MODEL, narr_path)
+        log.info("Whisper: %d palabras, lang=%s (%.0f%%)",
+                 len(words), info.language, info.language_probability * 100)
+
+    script = data.get("script_text")
+    if script:
+        before = len(words)
+        words = align_script_to_words(script, words)
+        log.info("Guion aplicado sobre la transcripcion: %d palabras del ASR → "
+                 "%d tokens del guion", before, len(words))
+    else:
+        log.warning("Sin script_text: el subtitulo B mostrara la transcripcion "
+                    "de Whisper, con sus erratas, en vez del guion.")
+    return words, bool(script)
+
+
+def _build_text_layer(narr_path, work, data, offset):
+    """→ (ass_path, filtros previos, informe). Lanza TextLayerError si el JSON falla."""
+    layer = parse_text_layer(data["text_layer"])
+    words, script_used = _words_for_text_layer(narr_path, work, data)
+    ass_text, report = build_ass(layer, words, offset=offset)
+
+    ass_path = os.path.join(work, "layer.ass")
+    with open(ass_path, "w", encoding="utf-8") as f:
+        f.write(ass_text)
+
+    from text_layer.burn import black_background_filters
+    pre = black_background_filters(report["black_backgrounds"])
+    report["script_applied"] = script_used
+    report["fonts_dir"] = find_fonts_dir()
+    report["fonts_resolved"] = _fonts_report()
+    log.info("Capa de texto: %d lineas de dialogo, %d eventos B (%d recortados "
+             "bajo cues), cues=%s", report["dialogue_lines"], report["b_events"],
+             report["b_events_trimmed"], report["cues"])
+    return ass_path, pre, report
+
+
+def _fonts_report():
+    """Que caras resuelve fontconfig. Una fuente en fallback es un fallo."""
+    import subprocess as sp
+    familias = ["Anton", "Cormorant Garamond Medium",
+                "Cormorant Garamond Medium Italic", "Cormorant Garamond SemiBold"]
+    out = {}
+    for fam in familias:
+        try:
+            r = sp.run(["fc-list", f":family={fam}", "file"],
+                       capture_output=True, text=True, timeout=10)
+            out[fam] = bool(r.stdout.strip())
+        except Exception:
+            out[fam] = None
+    return out
+
+
 # ── CTA overlay (last 60 seconds) ─────────────────────────
 
 
@@ -1308,16 +1520,27 @@ def _build_logo_overlay(hook_end=LOGO_HOOK_END):
 
 
 def _burn_subtitles_and_cta(video_path, ass_path, output_path,
-                            duration_sec=None, hook_end=LOGO_HOOK_END):
+                            duration_sec=None, hook_end=LOGO_HOOK_END,
+                            pre_filters=(), fonts_dir=None):
     """
     Single FFmpeg pass: ASS subtitles + CTA drawtext overlay (+ logo
     watermark only if LOGO_ENABLED). Uses filter_complex to safely chain
     everything.
+
+    `pre_filters` se aplican ANTES del ASS: son los `drawbox` de fondo negro
+    de los cues C con `background: "black"`, que tienen que quedar debajo del
+    titular. `fonts_dir` se pasa a libass para que resuelva Anton y Cormorant
+    sin depender de que fontconfig las haya indexado.
     """
     cta = _build_cta_filters(duration_sec)
     logo_inputs, logo_pre, src_pad = _build_logo_overlay(hook_end)
 
-    chain = "ass=" + ass_path
+    chain_parts = list(pre_filters)
+    ass_filter = "ass=" + ass_path
+    if fonts_dir:
+        ass_filter += ":fontsdir=" + fonts_dir
+    chain_parts.append(ass_filter)
+    chain = ",".join(chain_parts)
     if cta:
         chain += "," + ",".join(cta)
 

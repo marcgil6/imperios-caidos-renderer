@@ -5,5 +5,8 @@ google-api-python-client==2.165.0
 google-auth==2.38.0
 faster-whisper
 Pillow==10.4.0
+# Metricas de fuente para la capa de texto: ancho real de linea y conversion
+# de px de CSS a Fontsize de ASS. Es Python puro, sin binarios.
+fonttools==4.55.3
 # >=1.55: soporte de Debian 13 (trixie), la base actual de python:3.11-slim
 playwright>=1.55
