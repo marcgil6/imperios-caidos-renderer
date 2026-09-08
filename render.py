@@ -40,7 +40,11 @@ log = logging.getLogger("render")
 # Bump this string on every render.py change that affects output —
 # exposed via /health and in the /render response so a stale EasyPanel
 # deploy can be spotted without shell access to the container.
-BUILD_VERSION = "2026-09-08-capa-texto"
+# Subir esto en CADA cambio que se despliegue. El 2026-09-08 se arreglo la
+# alineacion sin tocarlo, se redesplego, y /health seguia diciendo lo mismo:
+# no habia forma de saber que el arreglo no habia entrado hasta lanzar un
+# render de 23 minutos y verlo fallar igual.
+BUILD_VERSION = "2026-09-08-capa-texto-2-alineacion"
 
 
 def _parse_creds(raw):
