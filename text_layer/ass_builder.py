@@ -35,7 +35,7 @@ from dataclasses import dataclass, field
 from typing import List
 
 from .alignment import STRONG_PUNCT, WEAK_PUNCT, Word, anchor_candidates, find_anchor
-from .metrics import ass_y_for_baseline, css_baseline, text_width
+from .metrics import ass_y_for_baseline, css_baseline, ink_extents, text_width
 from .schema import MIN_DUR, TextLayerError, normalize
 
 # ── Lienzo ─────────────────────────────────────────────────
@@ -258,12 +258,56 @@ def line_box_centers(n, pitch, anchor_y, anchor):
     return [top + (i + 0.5) * pitch for i in range(n)]
 
 
-def ass_ys(style, n_lines, anchor_y, anchor):
-    """`y` de cada linea para un `\\an5\\pos`, respetando la linea base del CSS."""
-    return [ass_y_for_baseline(
-                css_baseline(c, style.font, style.size, style.line_height),
-                style.font, style.size)
-            for c in line_box_centers(n_lines, style.pitch, anchor_y, anchor)]
+# Holgura optica minima entre la tinta de dos lineas seguidas, en em.
+# Proporcional al cuerpo: 2 px sueltos bastan para que no se toquen pero a
+# 211 px la tilde sigue leyendose pegada a la linea de arriba.
+# Con 0,08 em los dos casos del mock (el golpe C y el subtitulo B) siguen sin
+# necesitar separacion, que es la condicion que no se puede romper.
+INK_GAP_EM = 0.08
+
+
+def _plano(texto):
+    """Texto sin override ASS ni escapes, para poder medirlo."""
+    import re
+    return re.sub(r"\{[^}]*\}", "", texto).replace("\\N", " ").replace("\\", "")
+
+
+def ass_ys(style, lines, anchor_y, anchor):
+    """`y` de cada linea para un `\\an5\\pos`, respetando la linea base del CSS.
+
+    Parte del interlineado del CSS y luego separa las lineas SOLO si su tinta
+    se solaparia. Hace falta porque en Anton una mayuscula acentuada mide
+    1,101 em, mas que el cuadratin: con el `line-height: 1` del estilo C, la
+    tilde de "DÉCADAS" en segunda linea sube por encima de la linea base de la
+    primera y se lee como una coma. El mock no cubre el caso — su unico golpe
+    C de ejemplo lleva el acento arriba — y en castellano pasa a menudo.
+
+    Con esta regla el golpe C del storyboard sale con el interlineado exacto
+    del mock (no necesita separacion) y solo se abren los que de verdad
+    chocarian.
+    """
+    n = len(lines)
+    centros = line_box_centers(n, style.pitch, anchor_y, anchor)
+    bases = [css_baseline(c, style.font, style.size, style.line_height) for c in centros]
+
+    crecido = 0.0
+    for i in range(1, n):
+        alto, _ = ink_extents(_plano(lines[i]), style.font, style.size)
+        _, hondo = ink_extents(_plano(lines[i - 1]), style.font, style.size)
+        minimo = alto + hondo + INK_GAP_EM * style.size
+        falta = minimo - (bases[i] - bases[i - 1])
+        if falta > 0:
+            for k in range(i, n):
+                bases[k] += falta
+            crecido += falta
+
+    # Re-anclar el bloque: al crecer hacia abajo se desplaza para que el
+    # anclaje siga significando lo mismo (borde inferior o centro).
+    if crecido:
+        ajuste = crecido if anchor == "bottom" else (crecido / 2 if anchor == "center" else 0)
+        bases = [b - ajuste for b in bases]
+
+    return [ass_y_for_baseline(b, style.font, style.size) for b in bases]
 
 
 # ── Utilidades ─────────────────────────────────────────────
@@ -345,7 +389,7 @@ def stacked(base_layer, start, end, style, lines_plain, lines_rich,
     `lines_plain` es el texto sin colores en linea (la sombra es toda negra);
     `lines_rich` el que se ve, con el acento ambar donde toque.
     """
-    ys = ass_ys(style, len(lines_plain), anchor_y, anchor)
+    ys = ass_ys(style, lines_plain, anchor_y, anchor)
     x = round(x)
     events = []
     for capa, (y, plain, rich) in enumerate(zip(ys, lines_plain, lines_rich)):
@@ -615,7 +659,7 @@ def _e_events(cue, offset):
         # el texto, no como evento aparte, para que quede pegado a el pase lo
         # que pase con el ancho de "1 / 3". \an6 ancla a la derecha, como el
         # `right: 3%` del CSS.
-        y = ass_ys(S_COUNTER, 1, COUNTER_TOP, "top")[0]
+        y = ass_ys(S_COUNTER, [cue.counter], COUNTER_TOP, "top")[0]
         dash = "{\\p1}" + rect(COUNTER_DASH_W, COUNTER_DASH_H) + "{\\p0}\\h"
         events.append(_dialogue(
             L_CUE + 7, cue.start, cue.end, S_COUNTER.name,

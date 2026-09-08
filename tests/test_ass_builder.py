@@ -15,7 +15,7 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from tests.gancho_amelia import SCRIPT, TEXT_LAYER, synthetic_alignment
-from text_layer.ass_builder import (ALL_STYLES, S_B, S_B_LOOP, build_ass,
+from text_layer.ass_builder import (ALL_STYLES, S_B, S_B_LOOP, ass_ys, build_ass,
                                     subtract_intervals, wrap_lines)
 from text_layer.alignment import align_script_to_words, find_anchor
 from text_layer.schema import TextLayerError, parse_text_layer
@@ -408,3 +408,45 @@ class TestNoSePierdeNiUnaPalabra(unittest.TestCase):
         for b in [e for e in texto if e.style in B_STYLES]:
             self.assertFalse(b.start < golpes[0].end - 1e-6
                              and golpes[0].start < b.end - 1e-6)
+
+
+class TestLineasQueNoSePisan(unittest.TestCase):
+    """En Anton una mayuscula acentuada mide 1,101 em, mas que el cuadratin.
+
+    Con el `line-height: 1` que pide el mock para el estilo C, un "DÉCADAS" en
+    segunda linea mete la tilde por encima de la linea base de la primera y se
+    lee como una coma. El mock no cubre el caso porque su unico golpe C de
+    ejemplo lleva el acento en la linea de arriba.
+    """
+
+    def _paso(self, style, lineas, anchor_y, anchor):
+        ys = ass_ys(style, lineas, anchor_y, anchor)
+        return ys[1] - ys[0]
+
+    def test_el_golpe_c_del_mock_conserva_su_interlineado(self):
+        from text_layer.ass_builder import C_BOTTOM, S_C
+        # 177 px = line-height 1 x 177, medido en el navegador (pitch 176,7).
+        self.assertEqual(self._paso(S_C, ["NADIE VOLVERÁ", "A VERLA CON VIDA"],
+                                    C_BOTTOM, "bottom"), 177)
+
+    def test_una_mayuscula_acentuada_abajo_separa_las_lineas(self):
+        from text_layer.ass_builder import MID_CENTER, S_C_MID
+        sin = self._paso(S_C_MID, ["NO EN SIGLOS", "EN DECADAS"], MID_CENTER, "center")
+        con = self._paso(S_C_MID, ["NO EN SIGLOS", "EN DÉCADAS"], MID_CENTER, "center")
+        self.assertEqual(sin, 211, "sin tilde tiene que quedarse en el del mock")
+        self.assertGreater(con, sin, "con tilde tiene que separarse")
+        self.assertGreaterEqual(con, 232, "la Ê de Anton mide 1,101 em = 232 px a 211")
+
+    def test_el_subtitulo_b_no_se_toca(self):
+        from text_layer.ass_builder import B_BOTTOM, S_B
+        # line-height 1,28 x 79 = 101 px, medido en el navegador (100,8).
+        self.assertEqual(self._paso(S_B, ["La historia oficial dice que se",
+                                          "quedó sin combustible y cayó al mar."],
+                                    B_BOTTOM, "bottom"), 101)
+
+    def test_el_bloque_sigue_anclado_donde_estaba(self):
+        from text_layer.ass_builder import MID_CENTER, S_C_MID
+        a = ass_ys(S_C_MID, ["NO EN SIGLOS", "EN DECADAS"], MID_CENTER, "center")
+        b = ass_ys(S_C_MID, ["NO EN SIGLOS", "EN DÉCADAS"], MID_CENTER, "center")
+        # crece hacia los dos lados por igual: el centro no se mueve
+        self.assertAlmostEqual((a[0] + a[1]) / 2, (b[0] + b[1]) / 2, delta=1)

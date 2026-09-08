@@ -139,3 +139,53 @@ def ass_y_for_baseline(baseline, family, css_px):
         return round(baseline)
     shift = (vm["win_asc"] - vm["win_desc"]) * css_px / (2 * vm["upem"])
     return round(baseline - shift)
+
+
+# ── Extension real de la tinta ─────────────────────────────
+
+_BOUNDS_CACHE = {}
+
+
+def ink_extents(text, family, css_px):
+    """(alto sobre la linea base, profundidad bajo ella) en px, de la tinta real.
+
+    Hace falta para que dos lineas no se pisen. En Anton una mayuscula
+    acentuada mide 1,101 em — mas que el cuadratin — asi que con el
+    `line-height: 1` que pide el mock para el estilo C, la tilde de un
+    "DÉCADAS" en segunda linea sube 21 px por encima de la linea base de la
+    primera y se lee como una coma. El mock nunca lo probo: su unico golpe C
+    de ejemplo lleva el acento en la linea de arriba.
+    """
+    loaded = _load(family)
+    if loaded is None or not text:
+        return 0.0, 0.0
+    upem, _, _, _ = loaded
+
+    filename = _FONT_FILES.get(family)
+    directory = fonts_dir()
+    if not filename or not directory:
+        return 0.0, 0.0
+    key = (family, text)
+    if key not in _BOUNDS_CACHE:
+        try:
+            from fontTools.pens.boundsPen import BoundsPen
+            from fontTools.ttLib import TTFont
+        except ImportError:
+            return 0.0, 0.0
+        import os
+        font = TTFont(os.path.join(directory, filename), lazy=True)
+        cmap, glyphs = font.getBestCmap(), font.getGlyphSet()
+        top = bottom = 0.0
+        for ch in text:
+            name = cmap.get(ord(ch))
+            if not name or name not in glyphs:
+                continue
+            pen = BoundsPen(glyphs)
+            glyphs[name].draw(pen)
+            if pen.bounds:
+                top = max(top, pen.bounds[3])
+                bottom = min(bottom, pen.bounds[1])
+        font.close()
+        _BOUNDS_CACHE[key] = (top / upem, -bottom / upem)
+    alto, hondo = _BOUNDS_CACHE[key]
+    return alto * css_px, hondo * css_px
