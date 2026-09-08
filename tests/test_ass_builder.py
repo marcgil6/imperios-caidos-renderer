@@ -450,3 +450,76 @@ class TestLineasQueNoSePisan(unittest.TestCase):
         b = ass_ys(S_C_MID, ["NO EN SIGLOS", "EN DÉCADAS"], MID_CENTER, "center")
         # crece hacia los dos lados por igual: el centro no se mueve
         self.assertAlmostEqual((a[0] + a[1]) / 2, (b[0] + b[1]) / 2, delta=1)
+
+
+class TestAlineacionLarga(unittest.TestCase):
+    """La alineacion tiene que aguantar un guion entero, no solo un gancho.
+
+    El render del video 7 se paro con "solo 599 de 2282 palabras coinciden":
+    un `difflib` de una sola pasada sobre 2.300 tokens con una transcripcion
+    ruidosa alinea muy mal. Se reescribio por ventanas moviles.
+    """
+
+    def _guion_largo(self, n=60):
+        # Texto variado y con frases repetidas a proposito ("antes de Cristo"
+        # sale muchas veces en los guiones reales de EP), para que la ventana
+        # tenga que apoyarse en la posicion y no solo en la unicidad.
+        base = ("En el año {i} antes de Cristo la ciudad de {c} deja de aparecer "
+                "en los archivos. Nadie sabe por qué. Los arqueólogos encuentran "
+                "ceniza pero no encuentran cuerpos, y eso complica la explicación "
+                "más sencilla. ")
+        ciudades = ["Ugarit", "Hattusa", "Micenas", "Pilos", "Enkomi", "Menfis"]
+        return "".join(base.format(i=1200 - k * 7, c=ciudades[k % len(ciudades)])
+                       for k in range(n))
+
+    def _transcripcion(self, guion, error_cada=6, wps=2.05):
+        """Simula un ASR que se equivoca cada N palabras y parte alguna."""
+        from text_layer.alignment import Word
+        salida, t = [], 0.0
+        for k, tok in enumerate(guion.split()):
+            texto = tok if k % error_cada else tok[:-1] + "z" if len(tok) > 3 else tok
+            d = 1.0 / wps
+            salida.append(Word(texto, round(t, 3), round(t + d * 0.9, 3)))
+            t += d
+        return salida
+
+    def test_un_guion_de_2000_palabras_se_alinea_entero(self):
+        guion = self._guion_largo()
+        oido = self._transcripcion(guion)
+        self.assertGreater(len(guion.split()), 1000)
+        alineado = align_script_to_words(guion, oido)
+        self.assertEqual(len(alineado), len(guion.split()))
+        # Y el texto que sale es el del GUION, no el del ASR.
+        self.assertEqual([w.word for w in alineado], guion.split())
+
+    def test_los_tiempos_van_siempre_hacia_delante(self):
+        guion = self._guion_largo()
+        alineado = align_script_to_words(guion, self._transcripcion(guion))
+        for x, y in zip(alineado, alineado[1:]):
+            self.assertGreaterEqual(y.start, x.start - 1e-6)
+
+    def test_las_frases_caen_donde_toca_pese_a_repetirse(self):
+        from text_layer.alignment import find_anchor
+        guion = self._guion_largo()
+        oido = self._transcripcion(guion)
+        alineado = align_script_to_words(guion, oido)
+        total = oido[-1].end
+        # "antes de Cristo" sale en las 60 frases; la ULTIMA tiene que caer al
+        # final del audio, no emparejarse con una repeticion anterior.
+        ciudades = ["Ugarit", "Hattusa", "Micenas", "Pilos", "Enkomi", "Menfis"]
+        k = 59
+        ultima = (f"En el año {1200 - k * 7} antes de Cristo la ciudad de "
+                  f"{ciudades[k % len(ciudades)]} deja de aparecer")
+        self.assertIn(ultima, guion, "la frase de control no esta en el guion")
+        hit = find_anchor(ultima, alineado)
+        self.assertIsNotNone(hit)
+        self.assertGreater(hit[0], total * 0.85,
+                           "una frase del final se ha emparejado con una repeticion anterior")
+
+    def test_un_guion_de_otro_video_sigue_fallando(self):
+        guion = self._guion_largo()
+        otro = ("Amelia Earhart despega de Lae en Nueva Guinea y nadie vuelve a "
+                "verla con vida jamás. " * 40)
+        with self.assertRaises(TextLayerError) as ctx:
+            align_script_to_words(otro, self._transcripcion(guion))
+        self.assertIn("no casan", str(ctx.exception))

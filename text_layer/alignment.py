@@ -41,13 +41,14 @@ class Word:
 # ── Fuentes de alineacion ──────────────────────────────────
 
 
-def words_from_whisper(model, audio_path, language="es"):
-    """faster-whisper con tiempos por palabra.
+# Whisper deja de emitir segmentos a media narracion en tomas de 20+ min: no
+# da error, simplemente se calla. El renderer ya lo sabia y por eso troceaba
+# la narracion en ventanas de 5 min antes de transcribir. Aqui hay que hacer
+# lo mismo.
+WHISPER_CHUNK_SEC = 300
 
-    Se mantienen las mismas guardas que ya usa el renderer para narraciones
-    largas: `condition_on_previous_text=False` y VAD, porque en una toma de
-    20+ min Whisper deriva y deja de emitir segmentos a media narracion.
-    """
+
+def _transcribe(model, audio_path, language):
     segments, info = model.transcribe(
         audio_path,
         language=language,
@@ -64,6 +65,46 @@ def words_from_whisper(model, audio_path, language="es"):
             if text:
                 words.append(Word(text, float(w.start), float(w.end)))
     return words, info
+
+
+def words_from_whisper(model, audio_path, language="es", duration=None, cut=None,
+                       chunk_sec=WHISPER_CHUNK_SEC, log=None):
+    """faster-whisper con tiempos por palabra.
+
+    Tres guardas, y las TRES hacen falta:
+
+    * `condition_on_previous_text=False` — si no, Whisper se realimenta de su
+      propia salida y deriva.
+    * `vad_filter=True`.
+    * **Trocear la narracion en ventanas de `chunk_sec`.** Esta es la que de
+      verdad importa y la que faltaba: en una toma de 19 min, Whisper emitio
+      solo las primeras ~600 palabras de 2.282 y se callo, sin dar error. El
+      render del video 7 se detuvo con "el guion y la narracion no casan: solo
+      599 de 2282 palabras coinciden" — que al menos fallo a la vista, pero
+      fallo.
+
+    Para trocear hacen falta `duration` y `cut(inicio, duracion) -> ruta`, que
+    los pone quien llama (el renderer, que ya tiene ffmpeg a mano). Sin ellos
+    se hace una sola pasada, que vale para audios cortos.
+    """
+    import math
+
+    if duration and cut and duration > chunk_sec * 1.2:
+        n = math.ceil(duration / chunk_sec)
+        if log:
+            log("Transcribiendo en %d ventanas de ~%ds (audio %.0fs)", n, chunk_sec, duration)
+        words, info = [], None
+        for i in range(n):
+            inicio = i * chunk_sec
+            trozo = cut(inicio, min(chunk_sec, duration - inicio))
+            parciales, info = _transcribe(model, trozo, language)
+            words.extend(Word(w.word, w.start + inicio, w.end + inicio) for w in parciales)
+            if log:
+                log("  ventana %d/%d [%.0f-%.0fs]: %d palabras",
+                    i + 1, n, inicio, inicio + chunk_sec, len(parciales))
+        return words, info
+
+    return _transcribe(model, audio_path, language)
 
 
 def words_from_elevenlabs(alignment):
@@ -133,13 +174,24 @@ def _script_tokens(script_text):
     return [t for t in cleaned.split() if t.strip()]
 
 
-def align_script_to_words(script_text, words):
+def align_script_to_words(script_text, words, ventana=150, holgura=90,
+                          minimo_alineado=0.25):
     """Devuelve los tokens del GUION con los tiempos de la narracion real.
 
-    Empareja token a token contra la transcripcion por similitud. Los tramos
-    que Whisper no acerto (o que se comio) se reparten proporcionalmente entre
-    los anclajes que si casaron, asi que ningun token del guion se queda sin
-    tiempo.
+    Se alinea por VENTANAS, no de una sola pasada. `difflib` sobre las 2.300
+    palabras de golpe alinea muy mal: en el render del video 7 dio por
+    coincidentes 599 de 2.282, y en una prueba controlada un 13,9%, marcando
+    como no encontradas palabras tan comunes como "de" o "con" que estaban en
+    los dos lados. `SequenceMatcher` busca bloques largos, y cuando el ASR se
+    equivoca cada pocas palabras los bloques se fragmentan y el emparejamiento
+    se descoloca por completo.
+
+    Recorriendo el guion en ventanas de ~150 tokens y buscando cada una en el
+    tramo de transcripcion donde toca (mas una holgura), las secuencias que ve
+    `difflib` son cortas y las alinea bien. Ademas el avance es monotono, asi
+    que una frase repetida no puede emparejarse con la ocurrencia equivocada
+    del otro extremo del video — que es lo que descartaba la alternativa de
+    buscar n-gramas unicos.
     """
     tokens = _script_tokens(script_text)
     if not tokens:
@@ -149,31 +201,57 @@ def align_script_to_words(script_text, words):
 
     a = [normalize(t) for t in tokens]
     b = [w.norm for w in words]
-
-    matcher = difflib.SequenceMatcher(None, a, b, autojunk=False)
     aligned: List[Optional[Word]] = [None] * len(tokens)
-    matched = 0
-    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
-        if tag == "equal":
-            for k in range(i2 - i1):
-                aligned[i1 + k] = Word(tokens[i1 + k], words[j1 + k].start, words[j1 + k].end)
-            matched += i2 - i1
-        elif tag == "replace" and (i2 - i1) == (j2 - j1):
-            # Mismo numero de palabras a los dos lados: Whisper oyo mal la
-            # palabra pero ocupa la misma casilla ("Amalia" por "Amelia"), asi
-            # que su tiempo es el bueno. Interpolar aqui seria perder precision
-            # a cambio de nada.
-            for k in range(i2 - i1):
-                aligned[i1 + k] = Word(tokens[i1 + k], words[j1 + k].start, words[j1 + k].end)
 
-    if matched < max(3, len(tokens) * 0.30):
+    ai, bi, alineados = 0, 0, 0
+    while ai < len(a):
+        a_fin = min(ai + ventana, len(a))
+        # Donde deberia caer esta ventana en la transcripcion: por donde se
+        # quedo la anterior, o proporcional al avance si aun no hay nada.
+        b_est = bi if bi else int(ai * len(b) / max(len(a), 1))
+        b_ini = max(0, b_est - holgura // 2)
+        b_fin = min(len(b), b_ini + (a_fin - ai) + holgura)
+
+        avance_a, avance_b = ai, bi
+        if b_ini < b_fin:
+            sm = difflib.SequenceMatcher(None, a[ai:a_fin], b[b_ini:b_fin], autojunk=False)
+            for tag, i1, i2, j1, j2 in sm.get_opcodes():
+                # 'equal' son coincidencias reales. 'replace' con el mismo
+                # numero de palabras a los dos lados tambien vale: el ASR oyo
+                # mal la palabra pero ocupa la misma casilla ("Amalia" por
+                # "Amelia"), asi que su tiempo es el bueno e interpolarlo
+                # seria perder precision a cambio de nada.
+                if tag == "equal" or (tag == "replace" and (i2 - i1) == (j2 - j1)):
+                    for k in range(i2 - i1):
+                        aligned[ai + i1 + k] = Word(tokens[ai + i1 + k],
+                                                    words[b_ini + j1 + k].start,
+                                                    words[b_ini + j1 + k].end)
+                    if tag == "equal":
+                        alineados += i2 - i1
+                    avance_a, avance_b = ai + i2, b_ini + j2
+
+        # La ventana siempre avanza, coincida o no: si no, bucle infinito.
+        ai = avance_a if avance_a > ai else a_fin
+        bi = avance_b if avance_b > bi else min(len(b), b_fin)
+
+    fraccion = alineados / len(tokens)
+    if fraccion < minimo_alineado:
         raise TextLayerError(
-            f"El guion y la narracion no casan: solo {matched} de {len(tokens)} palabras "
-            "coinciden. Comprueba que script_text es el guion de ESTE audio."
+            f"El guion y la narracion no casan: solo {alineados} de {len(tokens)} "
+            f"palabras del guion ({fraccion:.0%}) se localizan en la transcripcion. "
+            "Comprueba que script_text es el guion de ESTE audio."
         )
 
     _interpolate(aligned, tokens, words)
-    return [w for w in aligned if w is not None]
+    resultado = [w for w in aligned if w is not None]
+
+    # Los tiempos tienen que ir hacia delante siempre.
+    for x, y in zip(resultado, resultado[1:]):
+        if y.start < x.start - 1e-6:
+            y.start = x.start
+        if y.end < y.start:
+            y.end = y.start
+    return resultado
 
 
 def _interpolate(aligned, tokens, words):
