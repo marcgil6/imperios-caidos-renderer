@@ -350,3 +350,61 @@ class TestValidaciones(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestNoSePierdeNiUnaPalabra(unittest.TestCase):
+    """El subtitulo B tiene que decir lo que dice la narracion, entera.
+
+    Se perdian dos cosas: los rabos de frase de menos de un segundo (se
+    descartaban) y las frases que no caben en dos lineas (el reparto de
+    emergencia truncaba). Las dos salieron al preparar el video 7.
+    """
+
+    GUION = ("Hacia el año 1200 antes de Cristo, las cartas dejan de llegar. "
+             "Egipto, el Imperio hitita, la Grecia micénica, Chipre y el Levante "
+             "mantenían rutas comerciales, embajadas, tratados matrimoniales y "
+             "correspondencia diplomática continua. "
+             "Lo que ocurrió entre 1200 y 1150 antes de Cristo sigue sin tener "
+             "una causa única confirmada. "
+             "Todo eso lo vas a descubrir en los próximos minutos. Empezamos.")
+
+    def _construir(self, cues=()):
+        from tests.gancho_amelia import synthetic_alignment
+        words = synthetic_alignment(self.GUION)
+        layer = parse_text_layer({"version": 1,
+                                  "cues": list(cues) or [
+                                      {"id": "l1", "type": "B_LOOP",
+                                       "anchor_text": "Empezamos."}],
+                                  "b_style": {"max_lines": 2, "max_chars_per_line": 42}})
+        return build_ass(layer, words), words
+
+    def test_todas_las_palabras_del_guion_salen_en_pantalla(self):
+        (ass, report), words = self._construir()
+        from text_layer.schema import normalize
+        visto = " ".join(sin_tags(e.text) for e in parse_events(ass, "text")
+                         if e.style in B_STYLES)
+        faltan = (collections.Counter(normalize(self.GUION).split())
+                  - collections.Counter(normalize(visto).split()))
+        self.assertEqual(sum(faltan.values()), 0,
+                         f"el subtitulo se come palabras: {dict(faltan)}")
+        self.assertEqual(report["b_events_hard_split"], [])
+
+    def test_una_frase_larga_no_se_trunca(self):
+        (ass, _), _ = self._construir()
+        from text_layer.schema import normalize
+        visto = normalize(" ".join(sin_tags(e.text) for e in parse_events(ass, "text")))
+        for trozo in ["tratados matrimoniales", "correspondencia diplomatica continua",
+                      "una causa unica confirmada", "empezamos"]:
+            self.assertIn(trozo, visto, trozo)
+
+    def test_bajo_un_cue_si_se_suprime_pero_no_en_otro_sitio(self):
+        (ass, _), words = self._construir(cues=[
+            {"id": "c1", "type": "C", "anchor_text": "Empezamos.",
+             "lines": ["EMPEZAMOS"], "accent": "EMPEZAMOS"}])
+        texto = [e for e in parse_events(ass, "text")]
+        golpes = [e for e in texto if e.style == "C"]
+        self.assertEqual(len(golpes), 1)
+        # Y ninguna capa B pisa al golpe.
+        for b in [e for e in texto if e.style in B_STYLES]:
+            self.assertFalse(b.start < golpes[0].end - 1e-6
+                             and golpes[0].start < b.end - 1e-6)

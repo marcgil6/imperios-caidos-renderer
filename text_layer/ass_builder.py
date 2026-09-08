@@ -432,16 +432,26 @@ class BEvent:
         return " ".join(w.word for w in self.words)
 
 
-def group_b_events(words, loop_flags, max_lines=2, max_chars_per_line=42):
+def group_b_events(words, loop_flags, style=None, max_lines=2, max_chars_per_line=42):
     """Palabras alineadas → eventos de subtitulo B.
 
     Corta primero en punto (una frase = un subtitulo), y solo si la frase no
-    cabe en `max_lines x max_chars_per_line` la parte en trozos, prefiriendo
-    los cortes de coma. Un cambio de B_LOOP fuerza corte siempre: una frase en
-    cursiva ambar nunca comparte evento con narracion normal.
+    cabe la parte en trozos, prefiriendo los cortes de coma. Un cambio de
+    B_LOOP fuerza corte siempre: una frase en cursiva ambar nunca comparte
+    evento con narracion normal.
+
+    El criterio de "cabe" es el propio `wrap_lines`, no un presupuesto de
+    caracteres. Contar caracteres parecia bastar y no basta: un trozo de 84
+    caracteres solo se parte en 42+42 si hay un espacio justo en el medio, y
+    casi nunca lo hay. Midiendo con `wrap_lines` se comprueba que existe un
+    corte real antes de aceptar la palabra.
     """
-    budget = max_lines * max_chars_per_line
+    style = style or S_B
     events, chunk = [], []
+
+    def cabe(candidato):
+        texto = " ".join(x.word for x in candidato)
+        return wrap_lines(texto, style, max_lines, max_chars_per_line) is not None
 
     def flush():
         if chunk:
@@ -451,23 +461,37 @@ def group_b_events(words, loop_flags, max_lines=2, max_chars_per_line=42):
 
     for w in words:
         same_loop = not chunk or loop_flags[id(chunk[0])] == loop_flags[id(w)]
-        would_be = len(" ".join(x.word for x in chunk + [w]))
-        if chunk and (not same_loop or would_be > budget):
+        if chunk and (not same_loop or not cabe(chunk + [w])):
             flush()
         chunk.append(w)
         if _ends_sentence(w.word):
             flush()
-        elif _ends_clause(w.word) and len(" ".join(x.word for x in chunk)) >= budget * 0.6:
-            flush()     # corte de respiro: la frase es larga y acaba de pasar una coma
+        elif _ends_clause(w.word) and not cabe(chunk + [chunk[-1]]):
+            flush()     # corte de respiro: acaba de pasar una coma y queda poco sitio
     flush()
 
-    # Duracion minima por evento. Se estira contra el hueco siguiente antes que
-    # fusionar, para no juntar dos frases que el guion separo.
-    for i, ev in enumerate(events):
-        if ev.end - ev.start >= MIN_DUR["B"]:
-            continue
-        limit = events[i + 1].start if i + 1 < len(events) else ev.start + MIN_DUR["B"]
-        ev.end = min(max(ev.end, ev.start + MIN_DUR["B"]), max(limit, ev.end))
+    # Eventos demasiado cortos. Pasa con los rabos de frase: "…correspondencia
+    # diplomatica continua." deja "continua." suelto, que dura 0,5 s. Estirarlo
+    # no vale porque el evento siguiente ya empieza; y descartarlo, que es lo
+    # que hacia antes, borra palabras de la narracion.
+    # Se resuelve moviendole palabras al evento ANTERIOR: el rabo crece hasta
+    # llegar al minimo y no se pierde nada.
+    for i in range(1, len(events)):
+        ev, prev = events[i], events[i - 1]
+        while (ev.end - ev.start < MIN_DUR["B"] and len(prev.words) > 1
+               and prev.loop == ev.loop):
+            candidato = [prev.words[-1]] + ev.words
+            texto = " ".join(x.word for x in candidato)
+            if wrap_lines(texto, style, max_lines, max_chars_per_line) is None:
+                break
+            prev.words.pop()
+            prev.end = prev.words[-1].end
+            ev.words = candidato
+            ev.start = candidato[0].start
+
+    # El ultimo no tiene siguiente contra el que chocar: se puede estirar.
+    if events and events[-1].end - events[-1].start < MIN_DUR["B"]:
+        events[-1].end = events[-1].start + MIN_DUR["B"]
     return events
 
 
@@ -485,6 +509,7 @@ def subtract_intervals(events, blocked):
     out, trimmed = [], 0
     for ev in events:
         pieces = [(ev.start, ev.end)]
+        cortado = False
         for b_start, b_end in blocked:
             nxt = []
             for p_start, p_end in pieces:
@@ -492,13 +517,18 @@ def subtract_intervals(events, blocked):
                     nxt.append((p_start, p_end))
                     continue
                 trimmed += 1
+                cortado = True
                 if p_start < b_start:
                     nxt.append((p_start, b_start))
                 if b_end < p_end:
                     nxt.append((b_end, p_end))
             pieces = nxt
         for p_start, p_end in pieces:
-            if p_end - p_start >= MIN_DUR["B"]:
+            # El minimo solo descarta restos DEL RECORTE: un parpadeo de medio
+            # segundo bajo un rotulo es peor que nada. Un evento que nadie ha
+            # cortado se respeta aunque sea corto, porque tirarlo borraria
+            # palabras que no se ven en ningun otro sitio.
+            if not cortado or p_end - p_start >= MIN_DUR["B"]:
                 out.append(BEvent(p_start, p_end, ev.words, ev.loop))
     return out, trimmed
 
@@ -670,7 +700,7 @@ def build_ass(layer, words, offset=0.0):
             loop_flags[id(w)] = True
         loops_found.append(cue.id)
 
-    b_events = group_b_events(words, loop_flags,
+    b_events = group_b_events(words, loop_flags, S_B,
                               layer.b_style.max_lines, layer.b_style.max_chars_per_line)
     b_events, trimmed = subtract_intervals(b_events, [(c.start, c.end) for c in overlays])
 
@@ -682,7 +712,8 @@ def build_ass(layer, words, offset=0.0):
         if lines is None:
             # Una frase que no cabe en dos lineas no puede tirar el render
             # entero de un video de 20 min: se parte por longitud y se avisa.
-            lines = _hard_split(ev.text, layer.b_style.max_chars_per_line)
+            lines = _hard_split(ev.text, layer.b_style.max_chars_per_line,
+                                layer.b_style.max_lines)
             unfitted.append(ev.text[:60])
         escaped = [_escape(l) for l in lines]
         dialogues.extend(stacked(L_B, ev.start, ev.end, style, escaped, escaped,
@@ -710,7 +741,14 @@ def build_ass(layer, words, offset=0.0):
     return header() + "\n".join(dialogues) + "\n", report
 
 
-def _hard_split(text, max_chars):
+def _hard_split(text, max_chars, max_lines):
+    """Ultimo recurso cuando ni `wrap_lines` encuentra un corte valido.
+
+    Reparte por longitud y, si aun asi no entra en `max_lines`, mete el resto
+    en la ultima linea. NUNCA descarta palabras: un subtitulo que se sale un
+    poco es un defecto visible y arreglable; uno al que le faltan palabras es
+    una mentira sobre lo que dice la narracion.
+    """
     words, lines, cur = text.split(), [], ""
     for w in words:
         if cur and len(cur) + 1 + len(w) > max_chars:
@@ -719,4 +757,6 @@ def _hard_split(text, max_chars):
             cur = f"{cur} {w}".strip()
     if cur:
         lines.append(cur)
-    return lines[:2]
+    if len(lines) > max_lines:
+        lines = lines[:max_lines - 1] + [" ".join(lines[max_lines - 1:])]
+    return lines
