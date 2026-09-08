@@ -40,7 +40,11 @@ log = logging.getLogger("render")
 # Bump this string on every render.py change that affects output —
 # exposed via /health and in the /render response so a stale EasyPanel
 # deploy can be spotted without shell access to the container.
-BUILD_VERSION = "2026-09-08-capa-texto"
+# Subir esto en CADA cambio que se despliegue. El 2026-09-08 se arreglo la
+# alineacion sin tocarlo, se redesplego, y /health seguia diciendo lo mismo:
+# no habia forma de saber que el arreglo no habia entrado hasta lanzar un
+# render de 23 minutos y verlo fallar igual.
+BUILD_VERSION = "2026-09-08-capa-texto-2-alineacion"
 
 
 def _parse_creds(raw):
@@ -1389,9 +1393,22 @@ def _words_for_text_layer(narr_path, work, data):
             )
         log.info("Sin alignment en el payload — transcribiendo con Whisper "
                  "(word_timestamps=True)...")
-        words, info = words_from_whisper(WHISPER_MODEL, narr_path)
-        log.info("Whisper: %d palabras, lang=%s (%.0f%%)",
-                 len(words), info.language, info.language_probability * 100)
+        dur = _probe_duration(narr_path)
+
+        def cortar(inicio, duracion, _n=[0]):
+            _n[0] += 1
+            destino = os.path.join(work, f"align_chunk_{_n[0]:02d}.wav")
+            _extract_audio_chunk(narr_path, destino, inicio, duracion)
+            return destino
+
+        words, info = words_from_whisper(WHISPER_MODEL, narr_path, duration=dur,
+                                         cut=cortar, log=log.info)
+        log.info("Whisper: %d palabras en %.0fs de audio, lang=%s (%.0f%%)",
+                 len(words), dur or 0, info.language, info.language_probability * 100)
+        if dur and len(words) < dur * 1.2:
+            log.warning("Solo %d palabras para %.0fs de narracion (~%.1f palabras/s). "
+                        "Whisper puede haberse callado antes de tiempo.",
+                        len(words), dur, len(words) / dur)
 
     script = data.get("script_text")
     if script:
