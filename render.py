@@ -44,7 +44,7 @@ log = logging.getLogger("render")
 # alineacion sin tocarlo, se redesplego, y /health seguia diciendo lo mismo:
 # no habia forma de saber que el arreglo no habia entrado hasta lanzar un
 # render de 23 minutos y verlo fallar igual.
-BUILD_VERSION = "2026-09-08-capa-texto-2-alineacion"
+BUILD_VERSION = "2026-09-09-capa-texto-3-teaser"
 
 
 def _parse_creds(raw):
@@ -410,6 +410,7 @@ def render():
                             "falls back to silent handling", i, e)
         teaser = _teaser_timing(teaser_cfg, narr_dur) if teaser_cfg else None
         teaser_sec = teaser["total"] if teaser else 0.0
+        teaser_cues = []
         hook_end = teaser["hook_end"] if teaser else HOOK_END
         if teaser:
             log.info("Teaser (%s): %d frases, total=%.2fs (gancho est. %.1fs → "
@@ -483,8 +484,15 @@ def render():
                 _download_drive(drive, freeze_id, freeze_path)
             else:
                 freeze_path = teaser["frases"][-1]["image_path"]
+            # Con capa de texto, el teaser va sin letras quemadas por PIL: las
+            # pone la capa ASS sincronizada con la voz. Los cues se calculan
+            # AQUI porque de paso fijan la duracion de cada corte de imagen.
+            if data.get("text_layer"):
+                teaser_cues = _teaser_cues(teaser, work)
+                log.info("Teaser: %d fragmentos sincronizados con su voz", len(teaser_cues))
             teaser_path = os.path.join(work, "teaser.mp4")
-            _build_teaser_video(work, teaser["frases"], freeze_path, teaser_path)
+            _build_teaser_video(work, teaser["frases"], freeze_path, teaser_path,
+                                draw_text=not data.get("text_layer"))
             with_teaser_path = os.path.join(work, "with_teaser.mp4")
             _concat_copy([teaser_path, joined_path], with_teaser_path, work)
             joined_path = with_teaser_path
@@ -533,7 +541,7 @@ def render():
             # con el estilo que este trabajo vino a eliminar y nadie se
             # enteraria hasta verlo.
             ass_path, pre_filters, text_layer_report = _build_text_layer(
-                narr_path, work, data, offset=teaser_sec)
+                narr_path, work, data, offset=teaser_sec, pre_cues=teaser_cues)
             _burn_subtitles_and_cta(mixed_path, ass_path, out_path, duration_sec,
                                     hook_end=hook_end, pre_filters=pre_filters,
                                     fonts_dir=text_layer_report["fonts_dir"])
@@ -1422,11 +1430,11 @@ def _words_for_text_layer(narr_path, work, data):
     return words, bool(script)
 
 
-def _build_text_layer(narr_path, work, data, offset):
+def _build_text_layer(narr_path, work, data, offset, pre_cues=()):
     """→ (ass_path, filtros previos, informe). Lanza TextLayerError si el JSON falla."""
     layer = parse_text_layer(data["text_layer"])
     words, script_used = _words_for_text_layer(narr_path, work, data)
-    ass_text, report = build_ass(layer, words, offset=offset)
+    ass_text, report = build_ass(layer, words, offset=offset, pre_cues=pre_cues)
 
     ass_path = os.path.join(work, "layer.ass")
     with open(ass_path, "w", encoding="utf-8") as f:
@@ -1457,6 +1465,104 @@ def _fonts_report():
         except Exception:
             out[fam] = None
     return out
+
+
+def _teaser_cues(teaser, work):
+    """Cues de la capa de texto para el teaser, sincronizados con su voz.
+
+    Antes el teaser dibujaba su texto con PIL y repartia los fragmentos de una
+    frase en trozos de duracion IDENTICA (`cut = (voice_dur + gap) / n`). Como
+    "¿Por qué desaparece el comercio—" y "que las ciudades?" no se tardan lo
+    mismo en decir, el texto se despegaba de la voz. Ademas iba con borde negro
+    grueso, que es justo el acabado que este trabajo vino a quitar.
+
+    Ahora cada fragmento sale cuando de verdad se pronuncia: se transcribe la
+    voz de la frase con tiempos por palabra, se alinea contra el texto de los
+    fragmentos (la misma maquinaria que corrige el subtitulo B con el guion) y
+    de ahi salen los tiempos reales de cada trozo.
+
+    Los tiempos son ABSOLUTOS del video final: el teaser va delante de todo.
+    """
+    from text_layer.schema import Cue
+
+    frases = teaser["frases"]
+    cues, base = [], 0.0
+    for i, frase in enumerate(frases):
+        fragmentos = [f for f in frase["fragmentos"] if f and f.strip()]
+        if not fragmentos:
+            continue
+        bloque = (frase.get("voice_dur") or 0) + TEASER_GAP if teaser["voiced"] \
+            else frase["cut"] * len(fragmentos)
+        # El cierre (la ultima frase) va entero en ambar, como el remate del
+        # gancho en el mock.
+        es_cierre = (i == len(frases) - 1)
+
+        tramos = None
+        if teaser["voiced"] and frase.get("voice_path") and WHISPER_MODEL is not None:
+            try:
+                tramos = _tramos_por_voz(frase["voice_path"], fragmentos, work, i)
+            except Exception as e:
+                log.warning("Teaser frase %d: no se pudo sincronizar con la voz "
+                            "(%s). Se reparte por igual.", i + 1, e)
+
+        if not tramos:
+            # Sin voz o sin Whisper: reparto uniforme, como antes.
+            paso = bloque / len(fragmentos)
+            tramos = [(k * paso, (k + 1) * paso) for k in range(len(fragmentos))]
+
+        # Duraciones del CORTE DE IMAGEN, para que la imagen cambie con el
+        # fragmento y no en una rejilla aparte. CLAUDE_EP.md ya decia que los
+        # cortes siguen el ritmo real de la locucion; el codigo repartia por
+        # igual. Suman exactamente el bloque, que es lo que mantiene el video
+        # cuadrado con la pista de voz.
+        arranques = [t[0] for t in tramos] + [bloque]
+        frase["frag_durs"] = [round(max(0.2, arranques[k + 1] - arranques[k]), 3)
+                              for k in range(len(tramos))]
+
+        for k, (frag, (ini, fin)) in enumerate(zip(fragmentos, tramos)):
+            texto = frag.strip().rstrip("—-").strip().upper()
+            if not texto:
+                continue
+            cue = Cue(id=f"t{i + 1:02d}_{k + 1}", type="C", placement="mid",
+                      style_hint="teaser")
+            cue.lines = [texto]
+            cue.accent = texto if es_cierre else None
+            cue.start = round(base + ini, 3)
+            cue.end = round(base + fin, 3)
+            cues.append(cue)
+        base += bloque
+
+    # Que no se pisen ni se salgan del teaser.
+    for a, b in zip(cues, cues[1:]):
+        if a.end > b.start:
+            a.end = b.start
+    for c in cues:
+        c.end = min(c.end, teaser["total"])
+        if c.end - c.start < 0.25:
+            c.end = c.start + 0.25
+    return [c for c in cues if c.start < teaser["total"]]
+
+
+def _tramos_por_voz(voice_path, fragmentos, work, indice):
+    """(inicio, fin) de cada fragmento dentro de su frase, segun la voz real."""
+    wav = os.path.join(work, f"teaser_voz_{indice}.wav")
+    _extract_audio_chunk(voice_path, wav, 0, 60)
+    palabras, _ = words_from_whisper(WHISPER_MODEL, wav)
+    if not palabras:
+        raise RuntimeError("Whisper no devolvio palabras")
+
+    texto = " ".join(f.strip().rstrip("—-").strip() for f in fragmentos)
+    alineadas = align_script_to_words(texto, palabras)
+
+    tramos, i = [], 0
+    for frag in fragmentos:
+        n = len(frag.strip().rstrip("—-").strip().split())
+        trozo = alineadas[i:i + n]
+        if not trozo:
+            raise RuntimeError("el reparto de fragmentos no cuadra con la alineacion")
+        tramos.append((trozo[0].start, trozo[-1].end))
+        i += n
+    return tramos
 
 
 # ── CTA overlay (last 60 seconds) ─────────────────────────
@@ -1661,11 +1767,16 @@ def _compose_teaser_frame(image_path, text, out_path):
     img.save(out_path, "JPEG", quality=92)
 
 
-def _build_teaser_video(work, frases, freeze_path, out_path):
+def _build_teaser_video(work, frases, freeze_path, out_path, draw_text=True):
     """
     Teaser video track: cuts (one per text fragment, each over its frase's
     item image, each frase paced by its own "cut" duration) + final
     ambiguous freeze frame with no text.
+
+    `draw_text=False` deja los fotogramas limpios: el texto lo pone la capa
+    ASS, sincronizado con la voz y con el estilo del canal. El troceado en
+    fragmentos se mantiene igual porque marca el RITMO VISUAL del teaser (un
+    corte por fragmento); lo que cambia es quien dibuja las letras.
     Encoded with the same params as the Ken Burns clips so the final
     concat with the main video can be a lossless stream copy.
     """
@@ -1674,8 +1785,9 @@ def _build_teaser_video(work, frases, freeze_path, out_path):
     for fi, frase in enumerate(frases):
         for gi, frag in enumerate(frase["fragmentos"]):
             frame = os.path.join(work, f"teaser_frame_{fi}_{gi}.jpg")
-            _compose_teaser_frame(frase["image_path"], frag, frame)
-            inputs += ["-loop", "1", "-t", f"{frase['cut']:.3f}", "-i", frame]
+            _compose_teaser_frame(frase["image_path"], frag if draw_text else None, frame)
+            dur = (frase.get("frag_durs") or [None] * 99)[gi] or frase["cut"]
+            inputs += ["-loop", "1", "-t", f"{dur:.3f}", "-i", frame]
             chains.append(f"[{idx}:v]setsar=1,fps={FPS}[v{idx}]")
             pads.append(f"[v{idx}]")
             idx += 1
