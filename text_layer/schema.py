@@ -66,6 +66,9 @@ class Cue:
     placement: Optional[str] = None      # None | "mid"
     background: Optional[str] = None     # None | "black"
 
+    # Pista de estilo para cues que no vienen del JSON: "teaser".
+    style_hint: Optional[str] = None
+
     # E / E_Q
     big: str = ""
     big_accent: str = ""

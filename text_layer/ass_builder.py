@@ -207,7 +207,19 @@ S_COUNTER = Style("EQCOUNT", FONT_SERIF, round(cqw(2.6)), _colour("E3AC3F", 0.85
                   round(cqw(2.6) * 0.12, 1), line_height=1.211,
                   fade=r"\fad(250,350)")
 
-ALL_STYLES = [S_B, S_B_LOOP, S_C, S_C_MID, S_E_BIG, S_E_SMALL,
+# El teaser: fragmentos de frase, mas largos que un golpe C, sobre pantalla
+# completa. Van al tamano del golpe C (177 px) y no al del titular centrado
+# (211), porque a 211 no caben: "¿POR QUÉ DESAPARECE EL COMERCIO" mide 3.016 px.
+# El teaser viejo lo resolvia encogiendo la fuente con PIL hasta 48 px; asi se
+# mantiene el cuerpo del canal y se reparte en dos lineas cuando hace falta.
+# Fundidos mas cortos porque los cortes del teaser duran medio segundo.
+S_C_TEASER = Style("CTEASER", FONT_IMPACT, round(cqw(9.2)), _colour("FFFFFF"),
+                   round(cqw(9.2) * 0.02, 1), line_height=1.0,
+                   drop_offset=10, drop_blur=9.6, drop_opacity=0.95,
+                   halo_blur=29, halo_opacity=0.70,
+                   max_width=PLAY_W - 2 * C_MID_MARGIN, fade=r"\fad(80,120)")
+
+ALL_STYLES = [S_B, S_B_LOOP, S_C, S_C_MID, S_C_TEASER, S_E_BIG, S_E_SMALL,
               S_EQ_BIG, S_EQ_SMALL, S_RULE, S_COUNTER]
 
 # ── Anclajes verticales (px de CSS) ────────────────────────
@@ -590,7 +602,19 @@ def _check_width(cue, text, style, what):
 
 
 def _c_events(cue, offset):
-    style = S_C_MID if cue.placement == "mid" else S_C
+    if cue.style_hint == "teaser":
+        style = S_C_TEASER
+        # El fragmento viene en una linea; se reparte si no cabe.
+        lineas = wrap_lines(cue.lines[0], style, max_lines=2)
+        if lineas is None:
+            raise TextLayerError(
+                f"cue {cue.id!r}: el fragmento {cue.lines[0]!r} no cabe en dos "
+                f"lineas a {style.size} px de {style.font}."
+            )
+        cue.lines = lineas
+    else:
+        style = S_C_MID if cue.placement == "mid" else S_C
+
     rich, plain, placed = [], [], False
     for line in cue.lines:
         upper = line.upper()
@@ -608,7 +632,7 @@ def _c_events(cue, offset):
             f"linea ({' / '.join(cue.lines)}). Parte el acento o reajusta las lineas."
         )
 
-    anchor_y, anchor = ((MID_CENTER, "center") if style is S_C_MID
+    anchor_y, anchor = ((MID_CENTER, "center") if style in (S_C_MID, S_C_TEASER)
                         else (C_BOTTOM, "bottom"))
     return stacked(L_CUE, cue.start, cue.end, style, plain, rich,
                    anchor_y, anchor, offset)
@@ -725,10 +749,14 @@ def resolve_cue_times(layer, words):
     return timed
 
 
-def build_ass(layer, words, offset=0.0):
+def build_ass(layer, words, offset=0.0, pre_cues=()):
     """`TextLayer` + alineacion → (texto del .ass, informe).
 
     `offset` desplaza toda la capa: la narracion empieza despues del teaser.
+
+    `pre_cues` son cues que YA vienen en tiempo absoluto del video final y por
+    tanto no llevan offset: los del teaser, que se sincronizan contra su propia
+    voz y ocurren antes de que empiece la narracion.
     """
     if not words:
         raise TextLayerError("No hay alineacion: la capa de texto no se puede colocar en el tiempo.")
@@ -746,7 +774,12 @@ def build_ass(layer, words, offset=0.0):
 
     b_events = group_b_events(words, loop_flags, S_B,
                               layer.b_style.max_lines, layer.b_style.max_chars_per_line)
-    b_events, trimmed = subtract_intervals(b_events, [(c.start, c.end) for c in overlays])
+    # Los cues del teaser tambien tapan al subtitulo B. No llegan a solaparse
+    # porque la narracion empieza despues, pero el invariante es el invariante.
+    bloqueado = ([(c.start + offset, c.end + offset) for c in overlays]
+                 + [(c.start - offset, c.end - offset) for c in pre_cues])
+    b_events, trimmed = subtract_intervals(
+        b_events, [(s - offset, e - offset) for s, e in bloqueado])
 
     dialogues, unfitted = [], []
     for ev in b_events:
@@ -767,6 +800,11 @@ def build_ass(layer, words, offset=0.0):
         dialogues.extend(_c_events(cue, offset) if cue.type == "C"
                          else _e_events(cue, offset))
 
+    # Los del teaser van sin offset: ya estan en tiempo del video final.
+    for cue in pre_cues:
+        dialogues.extend(_c_events(cue, 0.0) if cue.type == "C"
+                         else _e_events(cue, 0.0))
+
     report = {
         "b_events": len(b_events),
         "b_loop_events": sum(1 for e in b_events if e.loop),
@@ -776,11 +814,15 @@ def build_ass(layer, words, offset=0.0):
                  for t in ("B_LOOP", "C", "E", "E_Q")},
         "loops_resolved": loops_found,
         "black_backgrounds": [(round(c.start + offset, 3), round(c.end + offset, 3))
-                              for c in overlays if c.background == "black"],
+                              for c in overlays if c.background == "black"]
+                             + [(round(c.start, 3), round(c.end, 3))
+                                for c in pre_cues if c.background == "black"],
         "words_aligned": len(words),
+        "teaser_cues": len(pre_cues),
         "dialogue_lines": len(dialogues),
-        "last_event_end_sec": round(max([e.end for e in b_events] +
-                                        [c.end for c in overlays]) + offset, 2),
+        "last_event_end_sec": round(max([e.end + offset for e in b_events]
+                                        + [c.end + offset for c in overlays]
+                                        + [c.end for c in pre_cues]), 2),
     }
     return header() + "\n".join(dialogues) + "\n", report
 
