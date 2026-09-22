@@ -43,11 +43,35 @@ class YouTubeAuthError(RuntimeError):
     pass
 
 
+# Forma esperada de cada credencial. No basta con que la variable exista: si
+# /health dice que si con un valor basura, da luz verde para una subida que
+# muere en la autenticacion DESPUES de bajar 1,4 GB de Drive. Paso de verdad:
+# las tres llegaron con el mismo valor de 12 caracteres y /health lo dio por
+# bueno.
+_FORMA = {
+    "YT_CLIENT_ID": (lambda v: v.endswith(".apps.googleusercontent.com"),
+                     "debe acabar en .apps.googleusercontent.com"),
+    "YT_CLIENT_SECRET": (lambda v: v.startswith("GOCSPX-") and len(v) > 20,
+                         "debe empezar por GOCSPX-"),
+    "YT_REFRESH_TOKEN": (lambda v: v.startswith("1//") and len(v) > 40,
+                         "debe empezar por 1//"),
+}
+
+
+def credentials_problems():
+    """Lista de problemas con las credenciales. Vacia = tienen buena pinta."""
+    fallos = []
+    for nombre, (valida, esperado) in _FORMA.items():
+        v = (os.environ.get(nombre) or "").strip()
+        if not v:
+            fallos.append(f"{nombre}: sin definir")
+        elif not valida(v):
+            fallos.append(f"{nombre}: {esperado} (tiene {len(v)} caracteres)")
+    return fallos
+
+
 def credentials_configured():
-    return all(
-        os.environ.get(k)
-        for k in ("YT_CLIENT_ID", "YT_CLIENT_SECRET", "YT_REFRESH_TOKEN")
-    )
+    return not credentials_problems()
 
 
 def _service():

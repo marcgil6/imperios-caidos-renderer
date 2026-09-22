@@ -322,6 +322,7 @@ def debug_env():
     yt["parecidas_en_el_entorno"] = sorted(
         k for k in os.environ
         if ("YT" in k.upper() or "YOUTUBE" in k.upper()) and k not in yt)
+    yt["problemas"] = youtube_upload.credentials_problems()
     result["youtube"] = yt
     return jsonify(result)
 
@@ -1185,8 +1186,8 @@ def youtube_upload_route():
     if not youtube_upload.credentials_configured():
         return jsonify({
             "success": False,
-            "error": "El servicio no tiene credenciales de YouTube. Faltan "
-                     "YT_CLIENT_ID / YT_CLIENT_SECRET / YT_REFRESH_TOKEN.",
+            "error": "Credenciales de YouTube mal configuradas.",
+            "problemas": youtube_upload.credentials_problems(),
         }), 503
 
     workdir = Path(tempfile.mkdtemp(prefix="ytup_"))
