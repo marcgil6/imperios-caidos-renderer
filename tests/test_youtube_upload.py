@@ -152,6 +152,13 @@ class TestUnschedule(unittest.TestCase):
                 youtube_upload.unschedule("NOPE")
 
 
+BUENAS = {
+    "YT_CLIENT_ID": "595589045581-abc.apps.googleusercontent.com",
+    "YT_CLIENT_SECRET": "GOCSPX-" + "x" * 24,
+    "YT_REFRESH_TOKEN": "1//" + "y" * 60,
+}
+
+
 class TestCredentials(unittest.TestCase):
     def test_faltan_credenciales(self):
         with mock.patch.dict(os.environ, {}, clear=True):
@@ -160,9 +167,31 @@ class TestCredentials(unittest.TestCase):
                 youtube_upload._service()
 
     def test_las_tres_son_obligatorias(self):
-        parcial = {"YT_CLIENT_ID": "x", "YT_CLIENT_SECRET": "y"}
+        parcial = dict(BUENAS); parcial.pop("YT_REFRESH_TOKEN")
         with mock.patch.dict(os.environ, parcial, clear=True):
             self.assertFalse(youtube_upload.credentials_configured())
+
+    def test_credenciales_con_buena_forma(self):
+        with mock.patch.dict(os.environ, BUENAS, clear=True):
+            self.assertTrue(youtube_upload.credentials_configured())
+            self.assertEqual(youtube_upload.credentials_problems(), [])
+
+    def test_valor_basura_no_cuenta_como_configurado(self):
+        # Paso de verdad el 22/09: las tres variables llegaron con el mismo
+        # valor de 12 caracteres y /health lo dio por bueno, que es peor que
+        # decir que no: da luz verde a una subida que muere en la
+        # autenticacion DESPUES de bajar 1,4 GB de Drive.
+        basura = {k: "False False" for k in BUENAS}
+        with mock.patch.dict(os.environ, basura, clear=True):
+            self.assertFalse(youtube_upload.credentials_configured())
+            self.assertEqual(len(youtube_upload.credentials_problems()), 3)
+
+    def test_el_problema_dice_que_se_esperaba(self):
+        malo = dict(BUENAS, YT_REFRESH_TOKEN="ya29.deberia-ser-un-refresh-token")
+        with mock.patch.dict(os.environ, malo, clear=True):
+            problemas = youtube_upload.credentials_problems()
+            self.assertEqual(len(problemas), 1)
+            self.assertIn("1//", problemas[0])
 
 
 if __name__ == "__main__":
