@@ -25,6 +25,7 @@ from googleapiclient.http import MediaIoBaseDownload
 from PIL import Image, ImageDraw, ImageFont
 
 import audio_mix
+import youtube_upload
 from text_layer import (TextLayerError, build_ass, build_video_filters,
                         parse_text_layer, words_from_payload)
 from text_layer.alignment import align_script_to_words, words_from_whisper
@@ -44,7 +45,7 @@ log = logging.getLogger("render")
 # alineacion sin tocarlo, se redesplego, y /health seguia diciendo lo mismo:
 # no habia forma de saber que el arreglo no habia entrado hasta lanzar un
 # render de 23 minutos y verlo fallar igual.
-BUILD_VERSION = "2026-09-09-capa-texto-3-teaser"
+BUILD_VERSION = "2026-09-22-youtube-upload"
 
 
 def _parse_creds(raw):
@@ -273,6 +274,7 @@ def health():
         "logo_enabled": LOGO_ENABLED,
         "riser_found": RISER_PATH is not None,
         "playwright": _playwright_available(),
+        "youtube_creds": youtube_upload.credentials_configured(),
         "music_library": audio_mix.library_summary(
             audio_mix.load_library(str(MUSIC_LIBRARY_DIR), LEGACY_LIBRARY)),
     })
@@ -1044,6 +1046,106 @@ def thumbnail_download(token):
         return jsonify({"error": "thumbnail not found"}), 404
     return send_file(str(path), mimetype="image/jpeg", as_attachment=True,
                      download_name=f"{token}.jpg")
+
+
+# ── YouTube ────────────────────────────────────────────────
+
+
+@app.route("/youtube/upload", methods=["POST"])
+def youtube_upload_route():
+    """Sube a YouTube un MP4 que está en Drive, en privado y programado.
+
+    JSON:
+      drive_file_id      (obligatorio) el MP4 del vídeo
+      titulo             (obligatorio)
+      descripcion        (obligatorio)
+      tags               lista o cadena separada por comas
+      publish_at         ISO 8601 UTC con Z. Sin esto el vídeo queda en privado
+                         y sin fecha.
+      thumbnail_drive_id opcional, el PNG de la miniatura elegida
+      categoria          por defecto "24" (la del canal)
+      idioma             por defecto "es"
+
+    El vídeo NO se publica aquí: se sube en privado con publishAt y es YouTube
+    quien lo hace público a esa hora. Si algo va mal antes de esa fecha, basta
+    con desprogramarlo (/youtube/unschedule).
+    """
+    data = request.get_json(silent=True) or {}
+
+    drive_file_id = data.get("drive_file_id")
+    titulo = (data.get("titulo") or "").strip()
+    descripcion = data.get("descripcion") or ""
+    if not drive_file_id or not titulo:
+        return jsonify({"success": False,
+                        "error": "drive_file_id y titulo son obligatorios"}), 400
+
+    if not youtube_upload.credentials_configured():
+        return jsonify({
+            "success": False,
+            "error": "El servicio no tiene credenciales de YouTube. Faltan "
+                     "YT_CLIENT_ID / YT_CLIENT_SECRET / YT_REFRESH_TOKEN.",
+        }), 503
+
+    workdir = Path(tempfile.mkdtemp(prefix="ytup_"))
+    try:
+        drive = _get_drive_service(data.get("google_credentials_json"))
+
+        video_path = workdir / "video.mp4"
+        log.info("YouTube — bajando %s de Drive", drive_file_id)
+        _download_drive(drive, drive_file_id, str(video_path))
+
+        thumb_path = None
+        thumb_id = data.get("thumbnail_drive_id")
+        if thumb_id:
+            try:
+                thumb_path = workdir / "thumb.png"
+                _download_drive(drive, thumb_id, str(thumb_path))
+            except Exception as e:
+                # Igual que arriba: la miniatura no puede tumbar la subida.
+                log.error("YouTube — no se pudo bajar la miniatura %s: %s", thumb_id, e)
+                thumb_path = None
+
+        result = youtube_upload.upload(
+            str(video_path),
+            titulo=titulo,
+            descripcion=descripcion,
+            tags=data.get("tags"),
+            publish_at=data.get("publish_at"),
+            categoria=data.get("categoria", "24"),
+            idioma=data.get("idioma", "es"),
+            made_for_kids=data.get("made_for_kids", False),
+            thumbnail_path=str(thumb_path) if thumb_path else None,
+        )
+        result["success"] = True
+        result["duracion_seg"] = _probe_duration(str(video_path))
+        return jsonify(result)
+
+    except youtube_upload.YouTubeAuthError as e:
+        log.exception("YouTube — auth")
+        return jsonify({"success": False, "error": str(e)}), 503
+    except Exception as e:
+        log.exception("YouTube — subida")
+        return jsonify({"success": False, "error": str(e)}), 500
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
+
+
+@app.route("/youtube/unschedule", methods=["POST"])
+def youtube_unschedule_route():
+    """Quita la fecha de publicación de un vídeo (el botón PARAR de Telegram)."""
+    data = request.get_json(silent=True) or {}
+    video_id = (data.get("video_id") or "").strip()
+    if not video_id:
+        return jsonify({"success": False, "error": "video_id es obligatorio"}), 400
+    try:
+        result = youtube_upload.unschedule(video_id)
+        result["success"] = True
+        return jsonify(result)
+    except youtube_upload.YouTubeAuthError as e:
+        return jsonify({"success": False, "error": str(e)}), 503
+    except Exception as e:
+        log.exception("YouTube — unschedule")
+        return jsonify({"success": False, "error": str(e)}), 500
 
 
 # ── Thumbnails ─────────────────────────────────────────────
