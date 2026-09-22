@@ -4,6 +4,10 @@ requests==2.32.3
 google-api-python-client==2.165.0
 google-auth==2.38.0
 faster-whisper
+# La miniatura del canal hace el gradeado del fondo con aritmetica de arrays.
+# Llegaba de rebote como dependencia de faster-whisper; declararlo evita que un
+# cambio alla se lleve por delante las miniaturas.
+numpy==2.1.3
 Pillow==10.4.0
 # Metricas de fuente para la capa de texto: ancho real de linea y conversion
 # de px de CSS a Fontsize de ASS. Es Python puro, sin binarios.
