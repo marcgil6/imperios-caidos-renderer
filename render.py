@@ -309,6 +309,20 @@ def debug_env():
         except Exception as e:
             result["json_ok"] = False
             result["json_error"] = str(e)
+
+    # Credenciales de YouTube: solo nombre, longitud y prefijo. NUNCA el valor.
+    # Sin esto, un "youtube_creds: false" no dice si la variable falta, si esta
+    # vacia o si el nombre lleva una errata, y se van varios despliegues a ciegas.
+    yt = {}
+    for nombre in ("YT_CLIENT_ID", "YT_CLIENT_SECRET", "YT_REFRESH_TOKEN"):
+        v = os.environ.get(nombre, "")
+        yt[nombre] = {"puesta": bool(v), "len": len(v),
+                      "empieza_por": v[:6] if v else None}
+    # Nombres parecidos ya definidos, para cazar erratas al teclear la variable.
+    yt["parecidas_en_el_entorno"] = sorted(
+        k for k in os.environ
+        if ("YT" in k.upper() or "YOUTUBE" in k.upper()) and k not in yt)
+    result["youtube"] = yt
     return jsonify(result)
 
 
