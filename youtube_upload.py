@@ -58,6 +58,22 @@ _FORMA = {
 }
 
 
+def credentials_fingerprints():
+    """sha256 (12 primeros) de cada credencial, para comparar con el origen.
+
+    Si las longitudes coinciden pero Google responde unauthorized_client, algun
+    caracter se corrompio al copiar y no hay forma de verlo a ojo. La huella lo
+    senala sin revelar el valor. Paso el 22/09 con el refresh token, que son 103
+    caracteres que el terminal parte en varias lineas al imprimirlos.
+    """
+    import hashlib
+    out = {}
+    for nombre in _FORMA:
+        v = (os.environ.get(nombre) or "").strip()
+        out[nombre] = hashlib.sha256(v.encode()).hexdigest()[:12] if v else None
+    return out
+
+
 def credentials_problems():
     """Lista de problemas con las credenciales. Vacia = tienen buena pinta."""
     fallos = []
@@ -79,11 +95,14 @@ def _service():
         raise YouTubeAuthError(
             "Faltan YT_CLIENT_ID / YT_CLIENT_SECRET / YT_REFRESH_TOKEN en el entorno"
         )
+    # .strip() obligatorio: la validacion de forma ya limpiaba, asi que un salto
+    # de linea o un espacio al final pasaba el control y luego llegaba crudo a
+    # Google, que responde unauthorized_client sin mas explicacion.
     creds = Credentials(
         token=None,
-        refresh_token=os.environ["YT_REFRESH_TOKEN"],
-        client_id=os.environ["YT_CLIENT_ID"],
-        client_secret=os.environ["YT_CLIENT_SECRET"],
+        refresh_token=os.environ["YT_REFRESH_TOKEN"].strip(),
+        client_id=os.environ["YT_CLIENT_ID"].strip(),
+        client_secret=os.environ["YT_CLIENT_SECRET"].strip(),
         token_uri="https://oauth2.googleapis.com/token",
         scopes=SCOPES,
     )

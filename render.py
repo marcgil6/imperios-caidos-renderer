@@ -323,6 +323,7 @@ def debug_env():
         k for k in os.environ
         if ("YT" in k.upper() or "YOUTUBE" in k.upper()) and k not in yt)
     yt["problemas"] = youtube_upload.credentials_problems()
+    yt["huellas"] = youtube_upload.credentials_fingerprints()
     result["youtube"] = yt
     return jsonify(result)
 
