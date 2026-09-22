@@ -13,6 +13,8 @@ RUN playwright install --with-deps chromium
 
 COPY render.py .
 COPY audio_mix.py .
+COPY thumbnail_ep.py .
+COPY youtube_upload.py .
 COPY text_layer/ ./text_layer/
 COPY music/ ./music/
 COPY fonts/ ./fonts/

@@ -25,6 +25,7 @@ from googleapiclient.http import MediaIoBaseDownload
 from PIL import Image, ImageDraw, ImageFont
 
 import audio_mix
+import thumbnail_ep
 import youtube_upload
 from text_layer import (TextLayerError, build_ass, build_video_filters,
                         parse_text_layer, words_from_payload)
@@ -45,7 +46,7 @@ log = logging.getLogger("render")
 # alineacion sin tocarlo, se redesplego, y /health seguia diciendo lo mismo:
 # no habia forma de saber que el arreglo no habia entrado hasta lanzar un
 # render de 23 minutos y verlo fallar igual.
-BUILD_VERSION = "2026-09-22-youtube-upload"
+BUILD_VERSION = "2026-09-22-miniatura-impacto"
 
 
 def _parse_creds(raw):
@@ -275,6 +276,7 @@ def health():
         "riser_found": RISER_PATH is not None,
         "playwright": _playwright_available(),
         "youtube_creds": youtube_upload.credentials_configured(),
+        "miniatura_ep": thumbnail_ep.fuentes_ok(),
         "music_library": audio_mix.library_summary(
             audio_mix.load_library(str(MUSIC_LIBRARY_DIR), LEGACY_LIBRARY)),
     })
@@ -1046,6 +1048,85 @@ def thumbnail_download(token):
         return jsonify({"error": "thumbnail not found"}), 404
     return send_file(str(path), mimetype="image/jpeg", as_attachment=True,
                      download_name=f"{token}.jpg")
+
+
+@app.route("/thumbnail/ep", methods=["POST"])
+def thumbnail_ep_route():
+    """Miniatura de ENIGMAS DEL PASADO compuesta con el mismo codigo que usa
+    Marc en local (thumbnail_ep.py), en vez de la plantilla HTML + Playwright.
+
+    Habia dos dibujos del mismo patron — el script de Python y la plantilla
+    HTML de EP-08 — y se separaron: el acabado de "cartel de impacto" que Marc
+    aprobo el 22/09 entro solo en el script, asi que el pipeline automatico
+    seguia sacando miniaturas del estilo viejo. Este endpoint deja un solo
+    dibujo.
+
+    JSON:
+      fondo_drive_id | fondo_url  (obligatorio) imagen de fondo sin texto
+      t1        (obligatorio) el titular grande
+      t2        (obligatorio) la linea corta / el contexto
+      cartel    opcional, el cartel de lugar
+      layout    diagonal | inferior | inferior-centro
+      estilo_texto  v3 (por defecto) | v2
+      acento    false, true, o el texto exacto a destacar en amarillo
+      color_t1, sin_grade, auto_luz, realce, oscurecer, cartel_contorno
+
+    Devuelve el PNG 1280x720, igual que /thumbnail, para que el nodo que lo
+    sube a Drive siga funcionando sin cambios.
+    """
+    data = request.get_json(silent=True) or {}
+    t1 = (data.get("t1") or "").strip()
+    t2 = (data.get("t2") or "").strip()
+    if not t1 or not t2:
+        return jsonify({"success": False, "error": "t1 y t2 son obligatorios"}), 400
+    if not data.get("fondo_drive_id") and not data.get("fondo_url"):
+        return jsonify({"success": False,
+                        "error": "hace falta fondo_drive_id o fondo_url"}), 400
+
+    workdir = Path(tempfile.mkdtemp(prefix="thumbep_"))
+    try:
+        fondo = workdir / "fondo.png"
+        if data.get("fondo_drive_id"):
+            drive = _get_drive_service(data.get("google_credentials_json"))
+            _download_drive(drive, data["fondo_drive_id"], str(fondo))
+        else:
+            _download_url(data["fondo_url"], str(fondo))
+
+        def caja(v):
+            if not v:
+                return None
+            if isinstance(v, str):
+                return tuple(int(x) for x in v.split(","))
+            return tuple(int(x) for x in v)
+
+        salida = workdir / "thumb.png"
+        thumbnail_ep.componer(
+            str(fondo), t1, t2, str(salida),
+            cartel_txt=data.get("cartel") or None,
+            acento=data.get("acento", False),
+            color_t1=data.get("color_t1", thumbnail_ep.BLANCO),
+            sin_grade=bool(data.get("sin_grade")),
+            contorno_cartel=((255, 255, 255)
+                             if data.get("cartel_contorno") == "blanco" else (0, 0, 0)),
+            layout=data.get("layout", "diagonal"),
+            caja_realce=caja(data.get("realce")),
+            caja_oscura=caja(data.get("oscurecer")),
+            auto_luz=bool(data.get("auto_luz")),
+            estilo_texto=data.get("estilo_texto", "v3"),
+        )
+        png = salida.read_bytes()
+        log.info("Miniatura EP compuesta: %d bytes, layout=%s, estilo=%s",
+                 len(png), data.get("layout", "diagonal"),
+                 data.get("estilo_texto", "v3"))
+        resp = send_file(io.BytesIO(png), mimetype="image/png", as_attachment=True,
+                         download_name="thumbnail.png")
+        resp.headers["X-Build-Version"] = BUILD_VERSION
+        return resp
+    except Exception as e:
+        log.exception("Miniatura EP")
+        return jsonify({"success": False, "error": str(e)}), 500
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
 
 
 # ── YouTube ────────────────────────────────────────────────
