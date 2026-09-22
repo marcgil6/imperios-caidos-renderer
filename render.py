@@ -1079,14 +1079,22 @@ def thumbnail_ep_route():
     t2 = (data.get("t2") or "").strip()
     if not t1 or not t2:
         return jsonify({"success": False, "error": "t1 y t2 son obligatorios"}), 400
-    if not data.get("fondo_drive_id") and not data.get("fondo_url"):
+    if not (data.get("fondo_drive_id") or data.get("fondo_url") or data.get("fondo_b64")):
         return jsonify({"success": False,
-                        "error": "hace falta fondo_drive_id o fondo_url"}), 400
+                        "error": "hace falta fondo_drive_id, fondo_url o fondo_b64"}), 400
 
     workdir = Path(tempfile.mkdtemp(prefix="thumbep_"))
     try:
         fondo = workdir / "fondo.png"
-        if data.get("fondo_drive_id"):
+        if data.get("fondo_b64"):
+            # EP-08 ya resuelve el fondo por prioridad (escena manual de Drive →
+            # gpt-image-1 → FLUX → imagen del propio video) y lo trae en base64.
+            # Aceptarlo asi evita rehacer aqui esa cascada.
+            crudo = data["fondo_b64"]
+            if "," in crudo[:64] and crudo.lstrip().startswith("data:"):
+                crudo = crudo.split(",", 1)[1]
+            fondo.write_bytes(base64.b64decode(crudo))
+        elif data.get("fondo_drive_id"):
             drive = _get_drive_service(data.get("google_credentials_json"))
             _download_drive(drive, data["fondo_drive_id"], str(fondo))
         else:
