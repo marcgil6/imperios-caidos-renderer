@@ -47,7 +47,7 @@ log = logging.getLogger("render")
 # alineacion sin tocarlo, se redesplego, y /health seguia diciendo lo mismo:
 # no habia forma de saber que el arreglo no habia entrado hasta lanzar un
 # render de 23 minutos y verlo fallar igual.
-BUILD_VERSION = "2026-09-25-titulares-21"
+BUILD_VERSION = "2026-09-25-titulares-21-publicar"
 
 
 def _parse_creds(raw):
@@ -1242,6 +1242,25 @@ def youtube_upload_route():
         return jsonify({"success": False, "error": str(e)}), 500
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
+
+
+@app.route("/youtube/publish", methods=["POST"])
+def youtube_publish_route():
+    """Pasa a publico ya un video privado. Para publicar el mismo dia, sin
+    dejarlo programado en YouTube (orden de Marc 25/09/2026)."""
+    data = request.get_json(silent=True) or {}
+    video_id = (data.get("video_id") or "").strip()
+    if not video_id:
+        return jsonify({"success": False, "error": "video_id es obligatorio"}), 400
+    try:
+        result = youtube_upload.publish_now(video_id)
+        result["success"] = True
+        return jsonify(result)
+    except youtube_upload.YouTubeAuthError as e:
+        return jsonify({"success": False, "error": str(e)}), 503
+    except Exception as e:
+        log.exception("YouTube — publicar")
+        return jsonify({"success": False, "error": str(e)}), 500
 
 
 @app.route("/youtube/unschedule", methods=["POST"])
