@@ -47,7 +47,7 @@ log = logging.getLogger("render")
 # alineacion sin tocarlo, se redesplego, y /health seguia diciendo lo mismo:
 # no habia forma de saber que el arreglo no habia entrado hasta lanzar un
 # render de 23 minutos y verlo fallar igual.
-BUILD_VERSION = "2026-09-25-candado-musica"
+BUILD_VERSION = "2026-09-25-titulares-21"
 
 
 def _parse_creds(raw):
