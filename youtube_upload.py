@@ -25,6 +25,8 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaFileUpload
 
+import sello_musica
+
 log = logging.getLogger("render")
 
 SCOPES = [
@@ -139,7 +141,13 @@ def upload(video_path, *, titulo, descripcion, tags=None, publish_at=None,
 
     publish_at: ISO 8601 en UTC con 'Z' (p. ej. "2026-10-01T16:00:00Z").
     Devuelve {video_id, url, publish_at, privacy, thumbnail_set, quota}.
+
+    Antes de gastar cuota exige el sello de música libre (sello_musica): un MP4
+    sin él puede llevar pistas con Content ID. Así se reclamó el vídeo 4 el
+    23/09/2026, subido desde un render del 05/08. No hay forma de saltárselo.
     """
+    sello = sello_musica.exigir_sello(video_path)
+    log.info("YouTube — sello de música OK: %s", sello)
     yt = _service()
 
     status = {
@@ -207,6 +215,7 @@ def upload(video_path, *, titulo, descripcion, tags=None, publish_at=None,
         "privacy": "private",
         "thumbnail_set": thumbnail_set,
         "quota": quota,
+        "music_sello": sello,
     }
 
 

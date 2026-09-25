@@ -25,6 +25,7 @@ from googleapiclient.http import MediaIoBaseDownload
 from PIL import Image, ImageDraw, ImageFont
 
 import audio_mix
+import sello_musica
 import thumbnail_ep
 import youtube_upload
 from text_layer import (TextLayerError, build_ass, build_video_filters,
@@ -46,7 +47,7 @@ log = logging.getLogger("render")
 # alineacion sin tocarlo, se redesplego, y /health seguia diciendo lo mismo:
 # no habia forma de saber que el arreglo no habia entrado hasta lanzar un
 # render de 23 minutos y verlo fallar igual.
-BUILD_VERSION = "2026-09-22-miniatura-impacto"
+BUILD_VERSION = "2026-09-25-candado-musica"
 
 
 def _parse_creds(raw):
@@ -628,6 +629,7 @@ def render():
             "images_count": len(img_list),
             "music_track": music_key,
             "music_engine": music_info.get("engine"),
+            "music_sello": sello_musica.leer_sello(str(persistent)),
             "music_tracks": music_info.get("tracks"),
             "music_attribution": music_info.get("attribution"),
             "music_warnings": music_info.get("warnings"),
@@ -860,6 +862,7 @@ def remix():
             "teaser_voices": len(voiced),
             "size_bytes": file_size,
             "music_engine": music_info.get("engine"),
+            "music_sello": sello_musica.leer_sello(str(persistent)),
             "music_tracks": music_info.get("tracks"),
             "music_attribution": music_info.get("attribution"),
             "music_warnings": music_info.get("warnings"),
@@ -1225,6 +1228,12 @@ def youtube_upload_route():
         result["duracion_seg"] = _probe_duration(str(video_path))
         return jsonify(result)
 
+    except sello_musica.MusicaNoCertificada as e:
+        # 422 y no 500: no es un fallo del servicio, es un fichero que no se
+        # debe publicar. n8n lo avisa por Telegram con el motivo.
+        log.error("YouTube — subida BLOQUEADA por la musica: %s", e)
+        return jsonify({"success": False, "bloqueado_por_musica": True,
+                        "error": str(e)}), 422
     except youtube_upload.YouTubeAuthError as e:
         log.exception("YouTube — auth")
         return jsonify({"success": False, "error": str(e)}), 503
@@ -1886,6 +1895,9 @@ def _burn_subtitles_and_cta(video_path, ass_path, output_path,
         "-filter_complex", filter_complex,
         "-map", "[vout]",
         "-map", "0:a",
+        # El sello de licencia de la musica (sello_musica) viaja en los
+        # metadatos globales de la mezcla: sin esto la subida lo rechazaria.
+        "-map_metadata", "0",
         "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
         "-c:a", "copy",
         "-movflags", "+faststart",
@@ -2161,7 +2173,10 @@ def _mix_audio_v2(work, video_path, narration_path, output_path, *,
                             teaser_sec=teaser_sec, hook_end=hook_end,
                             teaser_voice_path=teaser_voice_path,
                             riser_path=RISER_PATH, riser_volume=RISER_VOLUME,
-                            bed_gain_db=bed_gain, voice_gain_db=voice_gain)
+                            bed_gain_db=bed_gain, voice_gain_db=voice_gain,
+                            metadata=sello_musica.args_sello(
+                                sello_musica.MUSICA_LIBRE,
+                                [c["track"]["id"] for c in chosen], BUILD_VERSION))
 
         info["tracks"] = [
             {"id": c["track"]["id"], "title": c["track"].get("title"),
@@ -2184,9 +2199,18 @@ def _mix_audio_v2(work, video_path, narration_path, output_path, *,
     info = {"engine": "legacy", "tracks": [], "attribution": [],
             "warnings": ["motor v2 no disponible en este render"]}
     try:
+        # Mismo candado que la biblioteca: la pista de reserva tambien tiene que
+        # estar certificada, o se sale sin musica antes que con una reclamable.
+        motivo = sello_musica.motivo_rechazo(
+            legacy_track, sello_musica.cargar_manifiesto(str(MUSIC_LIBRARY_DIR)))
+        if motivo:
+            raise RuntimeError(f"pista de reserva no autorizada: {motivo}")
         _mix_audio(video_path, narration_path, legacy_track, output_path,
                    teaser_sec=teaser_sec, hook_end=hook_end,
-                   teaser_voice_path=teaser_voice_path)
+                   teaser_voice_path=teaser_voice_path,
+                   metadata=sello_musica.args_sello(
+                       sello_musica.MUSICA_LIBRE,
+                       [Path(legacy_track).stem], BUILD_VERSION))
         return info
     except Exception as e:
         log.error("Mezcla clasica tambien fallo (%s) - video con narracion sola", e)
@@ -2201,6 +2225,7 @@ def _mix_audio_v2(work, video_path, narration_path, output_path, *,
              "-filter_complex", f"[1:a]{delay}[aout]",
              "-map", "0:v", "-map", "[aout]", "-c:v", "copy", "-c:a", "aac",
              "-b:a", "192k", "-shortest", "-movflags", "+faststart",
+             *sello_musica.args_sello(sello_musica.SIN_MUSICA, build=BUILD_VERSION),
              output_path], timeout=600)
     return info
 
@@ -2228,7 +2253,8 @@ def _music_envelope(teaser_sec, hook_end=HOOK_END):
 
 
 def _mix_audio(video_path, narration_path, music_path, output_path,
-               teaser_sec=0.0, hook_end=HOOK_END, teaser_voice_path=None):
+               teaser_sec=0.0, hook_end=HOOK_END, teaser_voice_path=None,
+               metadata=()):
     """
     Narration + looped music. With a teaser, the narration is delayed by the
     teaser length, the music follows the hook envelope (elevated until
@@ -2285,6 +2311,7 @@ def _mix_audio(video_path, narration_path, music_path, output_path,
         "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
         "-shortest",
         "-movflags", "+faststart",
+        *metadata,
         output_path,
     ], timeout=600)
 

@@ -23,11 +23,16 @@ estable bajo la voz y solo respira en los huecos estructurales (teaser,
 transiciones del plan musical y cierre).
 """
 import json
+import logging
 import math
 import os
 import random
 import re
 import subprocess
+
+import sello_musica
+
+log = logging.getLogger("render")
 
 # ── Objetivos de mezcla ────────────────────────────────────
 TARGET_VOICE_LUFS = -14.5   # YouTube normaliza a -14 LUFS; la voz manda
@@ -133,24 +138,20 @@ def load_library(library_dir, legacy_tracks=None):
     Si la carpeta está vacía se cae a las pistas heredadas para que el render
     nunca se quede sin música.
     """
-    meta = {}
-    manifest = os.path.join(library_dir, "library.json")
-    if os.path.isfile(manifest):
-        try:
-            with open(manifest, "r", encoding="utf-8") as fh:
-                data = json.load(fh)
-            for t in data.get("tracks", []):
-                if t.get("file"):
-                    meta[t["file"]] = t
-        except Exception:
-            meta = {}
+    meta = sello_musica.cargar_manifiesto(library_dir)
 
     tracks = []
     if os.path.isdir(library_dir):
         for fn in sorted(os.listdir(library_dir)):
             if not fn.lower().endswith(AUDIO_EXT):
                 continue
-            m = meta.get(fn, {})
+            # Candado de licencia: solo suena lo que el manifiesto certifica
+            # como Biblioteca de audio de YouTube sin atribución (sello_musica).
+            motivo = sello_musica.motivo_rechazo(os.path.join(library_dir, fn), meta)
+            if motivo:
+                log.warning("Pista %s descartada: %s", fn, motivo)
+                continue
+            m = meta[fn]
             mood, intensity = _mood_from_name(fn)
             mood = m.get("mood") or mood
             if not mood:
@@ -167,7 +168,8 @@ def load_library(library_dir, legacy_tracks=None):
             })
 
     if not tracks and legacy_tracks:
-        tracks = [dict(t) for t in legacy_tracks]
+        tracks = [dict(t) for t in legacy_tracks
+                  if sello_musica.pista_autorizada(t["path"])]
     return tracks
 
 
@@ -399,7 +401,7 @@ def hook_envelope(teaser_sec, hook_end, dip=0.5, fade=1.5):
 def mix_final(video_path, narration_path, bed_path, output_path,
               teaser_sec=0.0, hook_end=30.0, teaser_voice_path=None,
               riser_path=None, riser_volume=0.9, bed_gain_db=0.0,
-              voice_gain_db=0.0, timeout=1800):
+              voice_gain_db=0.0, metadata=(), timeout=1800):
     """Voz normalizada + cama con ducking (+ riser y voz del teaser) → MP4."""
     fmt = "aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo"
     delay = f",adelay=delays={int(round(teaser_sec * 1000))}:all=1" if teaser_sec > 0 else ""
@@ -441,5 +443,5 @@ def mix_final(video_path, narration_path, bed_path, output_path,
 
     _run(args + ["-filter_complex", fc, "-map", "0:v", "-map", "[aout]",
                  "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-ar", "44100",
-                 "-shortest", "-movflags", "+faststart", output_path],
+                 "-shortest", "-movflags", "+faststart", *metadata, output_path],
          timeout=timeout)

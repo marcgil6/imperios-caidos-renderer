@@ -15,6 +15,7 @@ COPY render.py .
 COPY audio_mix.py .
 COPY thumbnail_ep.py .
 COPY youtube_upload.py .
+COPY sello_musica.py .
 COPY text_layer/ ./text_layer/
 COPY music/ ./music/
 COPY fonts/ ./fonts/
@@ -27,6 +28,12 @@ RUN mkdir -p /usr/share/fonts/truetype/ep \
 COPY branding/ ./branding/
 COPY sfx/ ./sfx/
 RUN ls -la /app/music/library/ && test "$(ls /app/music/library/*.mp3 | wc -l)" -ge 8
+# Candado de licencia: TODAS las pistas de la carpeta tienen que estar
+# certificadas en library.json (Biblioteca de audio de YouTube, sin atribucion,
+# sha256 igual). Un mp3 sin certificar no sonaria, pero es un error: rompe el build.
+RUN python -c "import os, sello_musica as s; d='/app/music/library'; m=s.cargar_manifiesto(d); \
+malas=[(f, s.motivo_rechazo(os.path.join(d, f), m)) for f in sorted(os.listdir(d)) if f.endswith(('.mp3','.wav','.m4a','.flac','.ogg','.aac'))]; \
+malas=[x for x in malas if x[1]]; print('musica certificada' if not malas else malas); raise SystemExit(1 if malas else 0)"
 RUN test -f /app/fonts/Anton-Regular.ttf
 # Que las cuatro caras se resuelvan por nombre de familia. Una fuente que cae
 # en sustitucion no da error en libass: sale un video con la tipografia
