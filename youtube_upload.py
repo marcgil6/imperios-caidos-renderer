@@ -219,6 +219,34 @@ def upload(video_path, *, titulo, descripcion, tags=None, publish_at=None,
     }
 
 
+def publish_now(video_id):
+    """Pasa a público YA un vídeo que está en privado (con o sin publishAt).
+
+    Para publicar "el mismo día" sin dejar el vídeo programado en YouTube: se
+    sube en privado sin fecha y, a la hora buena, n8n llama a esto. Misma
+    precaución que unschedule: part=status reemplaza el objeto entero, así que
+    se reenvía todo lo escribible.
+    """
+    yt = _service()
+    current = yt.videos().list(part="status", id=video_id).execute()
+    items = current.get("items", [])
+    if not items:
+        raise ValueError(f"El vídeo {video_id} no existe o no es de este canal")
+
+    status = items[0]["status"]
+    if status.get("uploadStatus") not in (None, "processed", "uploaded"):
+        raise ValueError(f"El vídeo {video_id} no está listo: uploadStatus={status.get('uploadStatus')}")
+    status.pop("publishAt", None)
+    status["privacyStatus"] = "public"
+    for ro in ("uploadStatus", "failureReason", "rejectionReason"):
+        status.pop(ro, None)
+
+    yt.videos().update(part="status", body={"id": video_id, "status": status}).execute()
+    log.info("YouTube — %s publicado", video_id)
+    return {"video_id": video_id, "privacy": "public",
+            "url": f"https://www.youtube.com/watch?v={video_id}", "quota": QUOTA_UPDATE + 1}
+
+
 def unschedule(video_id):
     """Quita la fecha de publicación: el vídeo se queda en privado indefinidamente.
 

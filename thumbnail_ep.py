@@ -58,12 +58,16 @@ MARGEN_SUP = 100
 MARGEN_INF = 124   # despeja el corchete inferior con holgura
 
 BLANCO, AMARILLO, ROJO = "#FFFFFF", "#F7E30C", "#E01B1B"
-CAP_T1, CAP_T1_2L, CAP_T2, CAP_CARTEL = 96, 84, 70, 46
+# Los titulares subieron un 21 % el 22/09/2026 (dos pasadas de +10 %) (orden de Marc, junto con el
+# acabado de cartel de impacto): el relieve y el contorno se comen parte de la
+# mancha de la letra, asi que al mismo cuerpo el titular pesaba menos que con el
+# relleno plano de antes. El wordmark y el cartel NO cambian.
+CAP_T1, CAP_T1_2L, CAP_T2, CAP_CARTEL = 117, 101, 85, 46
 ANCHO_CARTEL   = 620   # el cartel se encoge solo hasta caber aqui
 CONTORNO_CARTEL = 5
 CAP_MARCA, TRACKING_MARCA = 28, 3
-CAP_T1_INF = 86     # titular en el reparto inferior: mas bajo, tapa menos
-CAP_T2_INF = 48
+CAP_T1_INF = 105    # titular en el reparto inferior: mas bajo, tapa menos
+CAP_T2_INF = 58
 CAP_DETALLE = 32    # el cartel de arriba, a la altura del wordmark
 Y_BANDA_MARCA = BR_INSET + BR_BRAZO // 2   # eje de la banda superior:
                                            # media altura del brazo del corchete
@@ -81,7 +85,12 @@ ANCHO_CAJA_T1  = 470
 IMPACTO_FILETE   = (139, 26, 10)    # #8B1A0A
 IMPACTO_EX_CERCA = (107, 15, 5)     # #6B0F05
 IMPACTO_EX_LEJOS = (58, 6, 2)       # #3A0602
-CARA_AMARILLA = ("#FFF6B0", "#FFD60A", "#F29E0C")
+# El degradado sube de tono respecto a la referencia (que acababa en naranja
+# #F29E0C): medido a 168 px, el ancho real al que YouTube sirve la miniatura en
+# movil, la media de luminancia caia y el titular perdia pegada frente al
+# amarillo plano que se usaba antes. El relieve, el filete y el contorno no
+# cambian: el acabado de cartel es el mismo, solo la cara es mas luminosa.
+CARA_AMARILLA = ("#FFFDE0", "#F9EC3A", "#F5D400")
 CARA_BLANCA   = ("#FFFFFF", "#F4EFE6", "#C9BFAC")
 
 # Medidas a cuerpo de referencia (cap 86 px); pegar_impacto las escala al

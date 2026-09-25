@@ -158,6 +158,34 @@ class TestUnschedule(unittest.TestCase):
                 youtube_upload.unschedule("NOPE")
 
 
+class TestPublishNow(unittest.TestCase):
+    def _fake(self, status):
+        fake_yt = mock.MagicMock()
+        fake_yt.videos.return_value.list.return_value.execute.return_value = {
+            "items": [{"status": status}]}
+        return fake_yt
+
+    def test_pasa_a_publico_y_quita_la_fecha(self):
+        fake_yt = self._fake({"privacyStatus": "private", "publishAt": "2026-10-03T16:00:00Z",
+                              "license": "youtube", "publicStatsViewable": True,
+                              "selfDeclaredMadeForKids": False, "uploadStatus": "processed"})
+        with mock.patch.object(youtube_upload, "_service", return_value=fake_yt):
+            r = youtube_upload.publish_now("N99")
+        body = fake_yt.videos.return_value.update.call_args.kwargs["body"]
+        self.assertEqual(body["status"]["privacyStatus"], "public")
+        self.assertNotIn("publishAt", body["status"])
+        self.assertNotIn("uploadStatus", body["status"])
+        self.assertIs(body["status"]["selfDeclaredMadeForKids"], False)
+        self.assertEqual(r["privacy"], "public")
+
+    def test_no_publica_un_video_sin_procesar(self):
+        fake_yt = self._fake({"privacyStatus": "private", "uploadStatus": "failed"})
+        with mock.patch.object(youtube_upload, "_service", return_value=fake_yt):
+            with self.assertRaises(ValueError):
+                youtube_upload.publish_now("N99")
+        fake_yt.videos.return_value.update.assert_not_called()
+
+
 BUENAS = {
     "YT_CLIENT_ID": "595589045581-abc.apps.googleusercontent.com",
     "YT_CLIENT_SECRET": "GOCSPX-" + "x" * 24,
