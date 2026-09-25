@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "note": "Todas las pistas salen de la Biblioteca de audio de YouTube con el filtro 'No requiere atribucion' (licencia YouTube, sin Content ID). Descargadas el 2026-08-28.",
+  "note": "Todas las pistas salen de la Biblioteca de audio de YouTube con el filtro 'No requiere atribucion' (licencia YouTube, sin Content ID). Descargadas el 2026-08-28. Solo entran en un render las pistas listadas aqui con source 'YouTube Audio Library', attribution null y el sha256 que coincide (sello_musica.py): un mp3 copiado a la carpeta sin pasar por este manifiesto se ignora.",
   "tracks": [
     {
       "file": "ancient_high_03.mp3",
@@ -12,7 +12,8 @@
       "source": "YouTube Audio Library",
       "license": "YouTube Audio Library - no requiere atribucion",
       "attribution": null,
-      "lufs": -15.32
+      "lufs": -15.32,
+      "sha256": "ce1bcfa6cd29a4b00cb4c0cfd50931d01b8f892d79f73c4f7e263e3e2dc111be"
     },
     {
       "file": "ancient_low_01.mp3",
@@ -24,7 +25,8 @@
       "source": "YouTube Audio Library",
       "license": "YouTube Audio Library - no requiere atribucion",
       "attribution": null,
-      "lufs": -15.73
+      "lufs": -15.73,
+      "sha256": "ba0128e8bc173b3dc71eacff2066151d9138b1c134d8172d74ebe0c8171d44bb"
     },
     {
       "file": "ancient_medium_02.mp3",
@@ -36,7 +38,8 @@
       "source": "YouTube Audio Library",
       "license": "YouTube Audio Library - no requiere atribucion",
       "attribution": null,
-      "lufs": -15.56
+      "lufs": -15.56,
+      "sha256": "a4b88d472196258bba96215b5298a24eb79b2ce5256e2cae4e46af21e770d50f"
     },
     {
       "file": "atmospheric_high_03.mp3",
@@ -48,7 +51,8 @@
       "source": "YouTube Audio Library",
       "license": "YouTube Audio Library - no requiere atribucion",
       "attribution": null,
-      "lufs": -11.18
+      "lufs": -11.18,
+      "sha256": "4fcee32fa36ba7212ed21488b79db15d5d9aaa6899b484479a93832c16b34c84"
     },
     {
       "file": "atmospheric_low_01.mp3",
@@ -60,7 +64,8 @@
       "source": "YouTube Audio Library",
       "license": "YouTube Audio Library - no requiere atribucion",
       "attribution": null,
-      "lufs": -11.71
+      "lufs": -11.71,
+      "sha256": "b2cf724e8bcd0c818122be54415260577d6e9f888002e211aa7948365f35f5a0"
     },
     {
       "file": "atmospheric_medium_02.mp3",
@@ -72,7 +77,8 @@
       "source": "YouTube Audio Library",
       "license": "YouTube Audio Library - no requiere atribucion",
       "attribution": null,
-      "lufs": -13.64
+      "lufs": -13.64,
+      "sha256": "dc854001a88502d9f7fada74e06c584267793c342e1caf4dc8ed597470011429"
     },
     {
       "file": "dark_high_03.mp3",
@@ -84,7 +90,8 @@
       "source": "YouTube Audio Library",
       "license": "YouTube Audio Library - no requiere atribucion",
       "attribution": null,
-      "lufs": -10.2
+      "lufs": -10.2,
+      "sha256": "5f2950d0018cd0d2bd6511992ee77cbc0594aa5f7d907a57d7063c6a62725803"
     },
     {
       "file": "dark_low_01.mp3",
@@ -96,7 +103,8 @@
       "source": "YouTube Audio Library",
       "license": "YouTube Audio Library - no requiere atribucion",
       "attribution": null,
-      "lufs": -16.29
+      "lufs": -16.29,
+      "sha256": "bb121cf45b5fd279b5e9ccf5c4fa4efceaa5835533094b79a814fee873f3ad96"
     },
     {
       "file": "dark_medium_02.mp3",
@@ -108,7 +116,8 @@
       "source": "YouTube Audio Library",
       "license": "YouTube Audio Library - no requiere atribucion",
       "attribution": null,
-      "lufs": -12.7
+      "lufs": -12.7,
+      "sha256": "3bf3c44ecbc6fce9425d5f0999c92cbe42910e50d357f47ba6ecb650ec20934f"
     },
     {
       "file": "discovery_high_03.mp3",
@@ -120,7 +129,8 @@
       "source": "YouTube Audio Library",
       "license": "YouTube Audio Library - no requiere atribucion",
       "attribution": null,
-      "lufs": -11.74
+      "lufs": -11.74,
+      "sha256": "e3ffff567be8a962404b2067f139e37883c9a0d06fbdd2eb9a8a2fa04c4fdcfa"
     },
     {
       "file": "discovery_low_01.mp3",
@@ -132,7 +142,8 @@
       "source": "YouTube Audio Library",
       "license": "YouTube Audio Library - no requiere atribucion",
       "attribution": null,
-      "lufs": -23.24
+      "lufs": -23.24,
+      "sha256": "1f870fea46c75d799733e5be709e6054a1f39c5ef76fec7cfc4b76657b1cd9af"
     },
     {
       "file": "discovery_medium_02.mp3",
@@ -144,7 +155,8 @@
       "source": "YouTube Audio Library",
       "license": "YouTube Audio Library - no requiere atribucion",
       "attribution": null,
-      "lufs": -12.82
+      "lufs": -12.82,
+      "sha256": "dc05d53be779f7d2b3f9a0ce6bc56e3bf96162929c5df51eadd2e28b3598f3b0"
     },
     {
       "file": "emotional_high_03.mp3",
@@ -156,7 +168,8 @@
       "source": "YouTube Audio Library",
       "license": "YouTube Audio Library - no requiere atribucion",
       "attribution": null,
-      "lufs": -12.79
+      "lufs": -12.79,
+      "sha256": "be03f9d4079d50d0c765e2090b42a79a072fc1c609e443a4c642a0df9bb71cd1"
     },
     {
       "file": "emotional_low_01.mp3",
@@ -168,7 +181,8 @@
       "source": "YouTube Audio Library",
       "license": "YouTube Audio Library - no requiere atribucion",
       "attribution": null,
-      "lufs": -11.84
+      "lufs": -11.84,
+      "sha256": "41ef8ec2a893825eb62ed7539b20e0cc9de15fd1f2342f642b9eaac76af28643"
     },
     {
       "file": "emotional_medium_02.mp3",
@@ -180,7 +194,8 @@
       "source": "YouTube Audio Library",
       "license": "YouTube Audio Library - no requiere atribucion",
       "attribution": null,
-      "lufs": -12.74
+      "lufs": -12.74,
+      "sha256": "70b7798cfd966ebdb1f2e713773c99b3665cacabf04510db8930eb22369c7275"
     },
     {
       "file": "mystery_high_03.mp3",
@@ -192,7 +207,8 @@
       "source": "YouTube Audio Library",
       "license": "YouTube Audio Library - no requiere atribucion",
       "attribution": null,
-      "lufs": -10.55
+      "lufs": -10.55,
+      "sha256": "4e8aae557d11b6fed02feace51f4e904238c1ad28356949b9627e3ad278522ba"
     },
     {
       "file": "mystery_low_01.mp3",
@@ -204,7 +220,8 @@
       "source": "YouTube Audio Library",
       "license": "YouTube Audio Library - no requiere atribucion",
       "attribution": null,
-      "lufs": -13.76
+      "lufs": -13.76,
+      "sha256": "f4124c44c66ee527a86081fe5d2dd4c27cb6ec480848e8ca226b72af2fc2ea1f"
     },
     {
       "file": "mystery_medium_02.mp3",
@@ -216,7 +233,8 @@
       "source": "YouTube Audio Library",
       "license": "YouTube Audio Library - no requiere atribucion",
       "attribution": null,
-      "lufs": -16.17
+      "lufs": -16.17,
+      "sha256": "0daaeaebe3c85fab448ad75d5e01b47b63cee3946da058acd5b726af18836e57"
     },
     {
       "file": "neutral_high_03.mp3",
@@ -228,7 +246,8 @@
       "source": "YouTube Audio Library",
       "license": "YouTube Audio Library - no requiere atribucion",
       "attribution": null,
-      "lufs": -11.74
+      "lufs": -11.74,
+      "sha256": "fed90837e43f9b094db38d515084e3855628fa3595176551a02d5a70743bb395"
     },
     {
       "file": "neutral_low_01.mp3",
@@ -240,7 +259,8 @@
       "source": "YouTube Audio Library",
       "license": "YouTube Audio Library - no requiere atribucion",
       "attribution": null,
-      "lufs": -12.64
+      "lufs": -12.64,
+      "sha256": "3822dd1c6f8ee58670f9aec575db361b7c83ee3c6870c6944a3ed23cb56438c0"
     },
     {
       "file": "neutral_medium_02.mp3",
@@ -252,7 +272,8 @@
       "source": "YouTube Audio Library",
       "license": "YouTube Audio Library - no requiere atribucion",
       "attribution": null,
-      "lufs": -17.1
+      "lufs": -17.1,
+      "sha256": "cf5db7354d5baf73cc70a41ad13bdccaba0f14719f7065fffda749a7b8964e10"
     },
     {
       "file": "tension_high_03.mp3",
@@ -264,7 +285,8 @@
       "source": "YouTube Audio Library",
       "license": "YouTube Audio Library - no requiere atribucion",
       "attribution": null,
-      "lufs": -11.68
+      "lufs": -11.68,
+      "sha256": "be41375a5f8d777f3b0958e7afbef38ec9e352466de98a82150cf58b4eb28b65"
     },
     {
       "file": "tension_low_01.mp3",
@@ -276,7 +298,8 @@
       "source": "YouTube Audio Library",
       "license": "YouTube Audio Library - no requiere atribucion",
       "attribution": null,
-      "lufs": -10.71
+      "lufs": -10.71,
+      "sha256": "28c2e7c201d59c40b14d59b6ed2c3f8c4181213deff8101e36a1caca02b4ecad"
     },
     {
       "file": "tension_medium_02.mp3",
@@ -288,7 +311,8 @@
       "source": "YouTube Audio Library",
       "license": "YouTube Audio Library - no requiere atribucion",
       "attribution": null,
-      "lufs": -12.19
+      "lufs": -12.19,
+      "sha256": "a424ca0b7b49ca6c7cbf859446a055735b116f6ea7518d90d63cac11d3c416aa"
     }
   ]
 }

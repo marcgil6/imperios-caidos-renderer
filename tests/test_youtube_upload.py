@@ -65,6 +65,12 @@ class TestUploadBody(unittest.TestCase):
         self.path = os.path.join(os.path.dirname(__file__), "_yt_dummy.mp4")
         with open(self.path, "wb") as f:
             f.write(b"0" * 1024)
+        # El fichero de prueba no es un MP4 de verdad: el candado de musica se
+        # prueba aparte (test_sello_musica), aqui se da por superado.
+        p = mock.patch.object(youtube_upload.sello_musica, "exigir_sello",
+                              return_value={"ep-music": "yt-audio-library"})
+        p.start()
+        self.addCleanup(p.stop)
 
     def tearDown(self):
         os.remove(self.path)

@@ -9,8 +9,22 @@ render). Las tres pistas de Scott Buckley se retiraron del repo en el mismo
 commit: su Smart Content ID reclamaba los videos aunque el credito
 estuviera puesto.
 
-Todo archivo de audio que se deje en esta carpeta entra automáticamente en el
-sistema. **No hay que tocar código ni desplegar nada más que la imagen.**
+## Candado de licencia (desde el 25/09/2026)
+
+**Un archivo copiado a esta carpeta NO suena hasta que se certifica en
+`library.json`.** Cada entrada tiene que llevar `source: "YouTube Audio
+Library"`, `attribution: null` y el `sha256` del fichero. Si falta algo o el
+fichero no coincide, el motor lo descarta y el build de Docker falla.
+
+Por qué: el 23/09 se publicó el vídeo 4 con un render del 05/08 que llevaba
+"Uprising" de Scott Buckley, y YouTube lo reclamó. Además, cada MP4 que sale
+del servicio lleva un sello (`comment=ep-music=...`) y `youtube_upload` y
+`make_short.py` **rechazan cualquier fichero sin sello**. Ver `sello_musica.py`.
+
+Para añadir una pista: bajarla de la Biblioteca de audio de YouTube con el
+filtro "No requiere atribución", ponerle el nombre por convención, añadir su
+entrada a `library.json` con el sha256 (`shasum -a 256 fichero.mp3`) y pasar
+`tests/test_sello_musica.py` (ajustando el número de pistas esperado).
 
 ## Convención de nombres (es el manifiesto)
 
