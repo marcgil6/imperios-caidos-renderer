@@ -14,9 +14,11 @@ RUN playwright install --with-deps chromium
 COPY render.py .
 COPY audio_mix.py .
 COPY thumbnail_ep.py .
+COPY thumbnail_v3.py .
 COPY youtube_upload.py .
 COPY sello_musica.py .
 COPY text_layer/ ./text_layer/
+COPY render_v2/ ./render_v2/
 COPY music/ ./music/
 COPY fonts/ ./fonts/
 # Las fuentes de la capa de texto tambien en la ruta de fontconfig: libass las
@@ -47,6 +49,15 @@ RUN test -f /app/branding/logo_ep.png
 RUN test -f /app/sfx/riser_01_mixkit_1144.mp3
 RUN python -c "import audio_mix; print('audio_mix OK')"
 RUN python -c "import text_layer; print('text_layer OK')"
+# Render v2: mapas propios con Natural Earth (dominio publico). Se bajan en el build para
+# no depender de la red en cada render; si faltan, /health dice render_v2_mapas=false y
+# los planos de mapa caen a imagen.
+RUN mkdir -p /app/geo && python -c "import urllib.request as u; \
+b='https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/geojson/'; \
+[u.urlretrieve(b+n+'.geojson', '/app/geo/'+n+'.geojson') for n in \
+ ('ne_10m_admin_0_countries','ne_10m_admin_1_states_provinces','ne_10m_roads','ne_10m_lakes')]" \
+    && ls -la /app/geo
+RUN python -c "import render_v2.orquestador, render_v2.activos as a; assert a.geo_disponible(); print('render_v2 OK')"
 
 EXPOSE 5000
 
