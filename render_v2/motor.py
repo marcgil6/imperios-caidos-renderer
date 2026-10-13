@@ -92,7 +92,22 @@ def render_img(sh, p):
     caja = encuadre(src, lerp(m["cx"][0], m["cx"][1], e), lerp(m["cy"][0], m["cy"][1], e),
                     lerp(m["z"][0], m["z"][1], e))
     fr = src.transform((W, H), Image.EXTENT, caja, Image.BICUBIC)
+    sh["_caja"], sh["_size"] = caja, src.size      # para colocar marcas sobre la imagen
     return gradar(fr, sh.get("brillo", 1.0))
+
+
+def render_scan(sh, p):
+    """Barrido de escaner: la imagen A se revela como B tras una linea luminosa (estilo piloto)."""
+    a = render_img(dict(sh, src=sh["a"]), p)
+    b = render_img(dict(sh, src=sh["b"]), p)
+    xl = int(lerp(-80, W + 80, ease(clamp01((p - 0.1) / 0.75))))
+    m = Image.new("L", (W, H), 0)
+    ImageDraw.Draw(m).rectangle([0, 0, max(0, xl), H], fill=255)
+    fr = Image.composite(b, a, m)
+    d = ImageDraw.Draw(fr)
+    for k, col in ((26, (120, 230, 255)), (8, (230, 250, 255))):
+        d.line([(xl, 0), (xl, H)], fill=col, width=k)
+    return fr
 
 
 @functools.lru_cache(maxsize=16)
@@ -191,6 +206,15 @@ def ov_cifra(im, ov, lt):
     capa = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     d = ImageDraw.Draw(capa)
     g = ov["grande"]
+    if ov.get("contar"):
+        # Contador: la parte numerica sube desde 0 en 0,8 s (6.764 -> 0 ... 6.764)
+        import re as _re
+        m_ = _re.search(r"[\d.]+", g)
+        if m_:
+            objetivo = int(m_.group().replace(".", "") or 0)
+            n_ = int(objetivo * ease(clamp01(lt / 0.8)))
+            txt_n = f"{n_:,}".replace(",", ".") if "." in m_.group() else str(n_)
+            g = g[:m_.start()] + txt_n + g[m_.end():]
     size = int((210 if len(g) <= 8 else max(110, 210 * 8 / len(g))) * s)
     d.text((W / 2, H / 2 - 50), g, font=fuente("anton", size), fill=AMARILLO + (int(255 * a),),
            anchor="mm", stroke_width=7, stroke_fill=(25, 15, 5, int(255 * a)))
@@ -225,6 +249,32 @@ def ov_capitulo(im, ov, lt):
     d.text((W / 2, H / 2 - 30), ov["num"], font=fuente("anton", 120), fill=AMARILLO + (int(255 * a),), anchor="mm")
     d.text((W / 2, H / 2 + 80), ov["txt"], font=fuente("anton", 86), fill=(255, 255, 255, int(255 * a)),
            anchor="mm", stroke_width=3, stroke_fill=(0, 0, 0, int(255 * a)))
+    im.paste(capa, (0, 0), capa)
+
+
+def ov_marca(im, ov, lt, sh=None):
+    if not sh or "_caja" not in sh:
+        return
+    x0, y0, x1, y1 = sh["_caja"]
+    w, h = sh["_size"]
+    x = (ov["x"] * w - x0) / (x1 - x0) * W
+    y = (ov["y"] * h - y0) / (y1 - y0) * H
+    a = clamp01(lt / 0.25) * clamp01((ov["dur"] - lt) / 0.3)
+    if a <= 0:
+        return
+    capa = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    d = ImageDraw.Draw(capa)
+    r = ov.get("r", 70) * (1 + 0.08 * math.sin(lt * 6))
+    for k, al in ((10, 90), (6, 255)):
+        d.ellipse([x - r, y - r, x + r, y + r], outline=AMARILLO + (int(al * a),), width=k)
+    lado = 1 if x < W * 0.6 else -1
+    tx, ty = x + lado * (r + 30), y - r * 0.6
+    d.line([(x + lado * r * 0.7, y - r * 0.7), (tx, ty)], fill=AMARILLO + (int(255 * a),), width=5)
+    f = fuente("anton", 64)
+    tw = d.textlength(ov["txt"], font=f)
+    bx = tx if lado > 0 else tx - tw - 36
+    d.rectangle([bx, ty - 44, bx + tw + 36, ty + 40], fill=(15, 15, 15, int(220 * a)))
+    d.text((bx + 18, ty), ov["txt"], font=f, fill=AMARILLO + (int(255 * a),), anchor="lm")
     im.paste(capa, (0, 0), capa)
 
 
@@ -269,7 +319,7 @@ def pegar_sub(im, cue, t):
 
 # ── fotograma completo ─────────────────────────────────────
 
-RENDER = {"img": render_img, "titulo": render_titulo, "cita": render_cita}
+RENDER = {"img": render_img, "titulo": render_titulo, "cita": render_cita, "scan": render_scan}
 
 
 def _indice(tl, t):
@@ -312,12 +362,17 @@ def fotograma(tl, t):
         fr = Image.blend(Image.new("RGB", (W, H)), fr, lt / sh["negro_in"])
     if sh.get("negro_out") and sh["t1"] - t < sh["negro_out"]:
         fr = Image.blend(Image.new("RGB", (W, H)), fr, max(0.0, (sh["t1"] - t) / sh["negro_out"]))
+    if sh.get("flash_en") is not None and 0 <= t - sh["flash_en"] < 0.14:
+        fr = Image.blend(fr, Image.new("RGB", (W, H), (255, 250, 235)), 0.75 * (1 - (t - sh["flash_en"]) / 0.14))
     if sh.get("flash") and lt < 0.14:
         fr = Image.blend(fr, Image.new("RGB", (W, H), (255, 250, 235)), 0.75 * (1 - lt / 0.14))
     for ov in sh.get("ovs", []):
         olt = t - (sh["t0"] + ov.get("d", 0))
         if 0 <= olt < ov["dur"]:
-            OVERLAYS[ov["k"]](fr, ov, olt)
+            if ov["k"] == "marca":
+                ov_marca(fr, ov, olt, sh)
+            else:
+                OVERLAYS[ov["k"]](fr, ov, olt)
     if sh.get("credito"):
         ov_credito(fr, sh["credito"])
     for cue in tl["subs_por_plano"].get(str(i), []):

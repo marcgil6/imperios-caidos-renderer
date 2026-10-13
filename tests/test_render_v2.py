@@ -129,3 +129,38 @@ class TestMiniaturaV3(unittest.TestCase):
             self.assertLessEqual(len(" ".join(m["texto"]).split()), 3)          # 3 palabras como mucho
             self.assertGreaterEqual(m["letra_a_168px"], 12)                    # legible en el movil
             self.assertGreaterEqual(m["luma"], thumbnail_v3.LUMA_MIN - 10)     # luminosa aunque el fondo no lo sea
+
+
+class TestSincroniaV3(unittest.TestCase):
+    """El acabado de la v3: la imagen y los efectos entran en la palabra exacta."""
+
+    def test_anclas_por_palabra(self):
+        tmp = tempfile.mkdtemp()
+        ia = {}
+        for k in ("ITEM_1_IMG_1", "ITEM_1_IMG_2", "ITEM_2_IMG_1"):
+            r = os.path.join(tmp, k + ".png")
+            Image.new("RGB", (1600, 900), (180, 140, 90)).save(r)
+            ia[k] = r
+        words, dur = palabras(GUION)
+        plan = {"parrafos": [
+            {"p": 0, "planos": [{"tipo": "ia", "img": "ITEM_1_IMG_1"}, {"tipo": "ia", "img": "ITEM_1_IMG_2", "desde": "ciudad"}],
+             "superpuestos": [{"tipo": "marca", "texto": "Ciudad", "frase": "ciudad"}]},
+            {"p": 2, "planos": [{"tipo": "ia", "img": "ITEM_2_IMG_1"}, {"tipo": "escaneo", "img": "ITEM_1_IMG_1", "desde": "estructuras"}],
+             "superpuestos": [{"tipo": "cifra", "grande": "6.764", "peq": "estructuras", "frase": "seis"}]}]}
+        tl, _, _ = planificador.construir(GUION, words, plan, dur, CommonsFalso(tmp), ia, tmp, "s")
+        t_ciudad = next(w.start for w in words if w.word.lower().startswith("ciudad"))
+        self.assertTrue(any(abs(p["t0"] - t_ciudad) < 1e-3 for p in tl["planos"]))   # corte en «ciudad»
+        marcas = [(p, o) for p in tl["planos"] for o in p.get("ovs", []) if o["k"] == "marca"]
+        self.assertEqual(len(marcas), 1)
+        p, o = marcas[0]
+        self.assertAlmostEqual(p["t0"] + o["d"], t_ciudad, places=3)                 # marca en «ciudad»
+        # el escaneo parte de la imagen del plano anterior y revela otra distinta
+        idx = [i for i, p in enumerate(tl["planos"]) if p["tipo"] == "scan"]
+        self.assertEqual(len(idx), 1)
+        self.assertNotEqual(tl["planos"][idx[0]]["a"], tl["planos"][idx[0]]["b"])
+        cifra = [o for p in tl["planos"] for o in p.get("ovs", []) if o["k"] == "cifra"][0]
+        self.assertTrue(cifra["contar"])
+        self.assertGreaterEqual(cifra["dur"], 2.0)          # ninguna toma automatica la corta
+        motor.RUTAS.clear(); motor.RUTAS.update(ia)
+        for p in tl["planos"]:
+            motor.fotograma(tl, (p["t0"] + p["t1"]) / 2)                               # todos los tipos dibujan
