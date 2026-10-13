@@ -23,7 +23,7 @@ def _tramo(args):
     tl = json.load(open(ruta_tl))
     pr = subprocess.Popen(["ffmpeg", "-y", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "rgb24",
                            "-s", f"{motor.W}x{motor.H}", "-r", str(motor.FPS), "-i", "-",
-                           "-c:v", "libx264", "-preset", "medium", "-crf", "21", "-pix_fmt", "yuv420p", "-g", "60", salida],
+                           "-c:v", "libx264", "-preset", "veryfast", "-crf", "21", "-threads", "1", "-pix_fmt", "yuv420p", "-g", "60", salida],
                           stdin=subprocess.PIPE)
     for f in range(f0, f1):
         pr.stdin.write(motor.fotograma(tl, f / motor.FPS).tobytes())
@@ -36,7 +36,8 @@ def _tramo(args):
 def video(tl, rutas, work, nproc=None):
     ruta_tl = os.path.join(work, "timeline.json")
     json.dump(tl, open(ruta_tl, "w"), ensure_ascii=False)
-    nproc = nproc or max(1, min(12, (os.cpu_count() or 2) - 1))
+    # Todos los nucleos: el servidor de EasyPanel tiene 2 CPU y dejar uno libre doblaba el tiempo.
+    nproc = nproc or max(1, min(12, os.cpu_count() or 2))
     nf = int(tl["dur"] * motor.FPS)
     tramos = max(nproc, min(48, nf // 900))      # tramos de ~30 s: reparto parejo aunque haya planos caros
     cortes = [round(nf * i / tramos) for i in range(tramos + 1)]

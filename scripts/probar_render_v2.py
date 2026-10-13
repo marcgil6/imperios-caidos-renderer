@@ -51,7 +51,8 @@ def main():
     lib = os.path.join(AQUI, "music", "library")
     out, res = orquestador.run(script, words, json.load(open(plan)), narr, d, ia, work, lib,
                                semilla="prueba-local", build="local-v2",
-                               riser=os.path.join(AQUI, "sfx", "riser_01_mixkit_1144.mp3"))
+                               riser=os.path.join(AQUI, "sfx", "riser_01_mixkit_1144.mp3"),
+                               nproc=int(os.environ["NPROC"]) if os.environ.get("NPROC") else None)
     os.replace(out, salida)
     json.dump(res, open(salida + ".json", "w"), ensure_ascii=False, indent=1)
     print(json.dumps({k: v for k, v in res.items() if k != "creditos"}, ensure_ascii=False))
