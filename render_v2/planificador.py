@@ -12,7 +12,7 @@ import re
 from . import activos
 
 log = logging.getLogger("render_v2.plan")
-SEG_POR_PLANO = 3.4
+SEG_POR_PLANO = 5.0   # 5 s por plano: calma con intriga (Marc, 13/10/2026; el piloto iba a 3,4 s)
 BREAK = re.compile(r"<break[^>]*/?>")
 
 
@@ -34,9 +34,9 @@ def _rnd(semilla, i, n):
 
 
 def movimiento(semilla, i):
-    """Movimiento siempre visible (10-18 %), variado y repetible para un mismo video."""
+    """Movimiento visible pero sereno (8-13 % en ~5 s), variado y repetible para un mismo video."""
     k = _rnd(semilla, i, 6)
-    a = 0.10 + 0.08 * _rnd(semilla, i + 999, 100) / 100
+    a = 0.08 + 0.05 * _rnd(semilla, i + 999, 100) / 100
     if k == 0:
         return {"cx": [.5, .5], "cy": [.5, .5], "z": [1.0, 1.0 - a]}
     if k == 1:
@@ -101,7 +101,7 @@ def construir(script_text, palabras, plan, dur_total, commons, ia, carpeta_mapas
             objetivo = t_ini + D * k / n
             cerca = min(starts, key=lambda s: abs(s - objetivo)) if starts else objetivo
             c = cerca if abs(cerca - objetivo) < 0.7 else objetivo
-            if c - cortes[-1] > 1.2:
+            if c - cortes[-1] > 3.0:
                 cortes.append(c)
         primer_plano_par = len(planos)
         unicos_usados = set()
@@ -202,8 +202,9 @@ def construir(script_text, palabras, plan, dur_total, commons, ia, carpeta_mapas
             else:
                 continue
             pl.setdefault("ovs", []).append(o)
-        if pi and pi % 3 == 0 and len(planos) > primer_plano_par and "trans" not in planos[primer_plano_par]:
+        if pi and pi % 2 == 0 and len(planos) > primer_plano_par and "trans" not in planos[primer_plano_par]:
             planos[primer_plano_par]["trans"] = "fundido"
+            planos[primer_plano_par]["tdur"] = 0.6
         # subtitulos exactos por palabra: trozos de <= 10 palabras / 60 caracteres, cortando en frase
         cur = []
         for j, tk in enumerate(toks):

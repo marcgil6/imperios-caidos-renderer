@@ -73,12 +73,12 @@ class TestPlanificador(unittest.TestCase):
     def test_ritmo_y_continuidad(self):
         tl, creditos, rutas = self.construir()
         planos = tl["planos"]
-        self.assertGreater(len(planos), 5)
+        self.assertGreater(len(planos), 3)
         for a, b in zip(planos, planos[1:]):
             self.assertAlmostEqual(a["t1"], b["t0"], places=3)          # sin huecos
             self.assertGreater(a["t1"] - a["t0"], 1.0)
         media = sum(p["t1"] - p["t0"] for p in planos) / len(planos)
-        self.assertLess(media, 4.5)
+        self.assertLess(media, 6.5)                                     # ~5 s por plano
         self.assertEqual(planos[0]["t0"], 0.0)
 
     def test_titulo_una_vez_y_superposiciones(self):
