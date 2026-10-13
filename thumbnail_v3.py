@@ -26,8 +26,25 @@ ROJO = (230, 30, 25)
 LUMA_MIN = 120
 
 
+def _quitar_bordes_lisos(im):
+    """La IA a veces deja una franja lisa (blanca o de un color) donde se le pidio 'espacio libre'.
+    Se recortan las columnas casi uniformes de los bordes antes de encuadrar."""
+    g = np.asarray(im.convert("L"), dtype=np.float32)
+    std = g.std(axis=0)
+    w = len(std)
+    izq = 0
+    while izq < w * 0.4 and std[izq] < 6:
+        izq += 1
+    der = w
+    while der > w * 0.6 and std[der - 1] < 6:
+        der -= 1
+    if izq > w * 0.03 or der < w * 0.97:
+        im = im.crop((izq, 0, der, im.height))
+    return im
+
+
 def _cubrir(im):
-    im = im.convert("RGB")
+    im = _quitar_bordes_lisos(im.convert("RGB"))
     r = max(W / im.width, H / im.height)
     im = im.resize((math.ceil(im.width * r), math.ceil(im.height * r)), Image.LANCZOS)
     x, y = (im.width - W) // 2, (im.height - H) // 2
@@ -164,6 +181,18 @@ def componer(fondo, salida, linea1="", linea2="", estilo="flecha", fondo2=None, 
 
     ancho_txt = W * (0.46 if estilo != "texto" else 0.9)
     size = _tamano([l1, l2], ancho_txt)
+    # Si la zona del texto es muy clara (cielo blanco, arena), el texto blanco pierde contraste:
+    # se oscurece SOLO ese lado con un degradado suave, sin tocar al sujeto.
+    alto_txt = 30 + int(size * 1.08) * (bool(l1) + bool(l2))
+    x0, x1 = (0, int(ancho_txt) + 60) if lado_izq else (W - int(ancho_txt) - 60, W)
+    zona = im.crop((x0, 0, x1, min(H, alto_txt + 20)))
+    if luma(zona) > 165:
+        g = np.linspace(0.55, 0.0, x1 - x0) if lado_izq else np.linspace(0.0, 0.55, x1 - x0)
+        alfa = np.tile(g, (H, 1))
+        alfa *= np.clip(1.3 - np.linspace(0, 1, H)[:, None] * 0.9, 0, 1)   # mas fuerte arriba, donde va el texto
+        sombra = Image.fromarray((alfa * 255).astype(np.uint8))
+        bloque = im.crop((x0, 0, x1, H))
+        im.paste(Image.composite(Image.new("RGB", bloque.size, (10, 20, 30)), bloque, sombra), (x0, 0))
     y = 30
     cajas = []
     if l1:
