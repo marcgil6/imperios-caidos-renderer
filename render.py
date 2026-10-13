@@ -25,8 +25,11 @@ from googleapiclient.http import MediaIoBaseDownload
 from PIL import Image, ImageDraw, ImageFont
 
 import audio_mix
+from render_v2 import orquestador as render_v2_orquestador
+from render_v2 import activos as render_v2_activos
 import sello_musica
 import thumbnail_ep
+import thumbnail_v3
 import youtube_upload
 from text_layer import (TextLayerError, build_ass, build_video_filters,
                         parse_text_layer, words_from_payload)
@@ -47,7 +50,7 @@ log = logging.getLogger("render")
 # alineacion sin tocarlo, se redesplego, y /health seguia diciendo lo mismo:
 # no habia forma de saber que el arreglo no habia entrado hasta lanzar un
 # render de 23 minutos y verlo fallar igual.
-BUILD_VERSION = "2026-09-25-candado-musica"
+BUILD_VERSION = "2026-10-13-render-v2"
 
 
 def _parse_creds(raw):
@@ -280,6 +283,10 @@ def health():
         "miniatura_ep": thumbnail_ep.fuentes_ok(),
         "music_library": audio_mix.library_summary(
             audio_mix.load_library(str(MUSIC_LIBRARY_DIR), LEGACY_LIBRARY)),
+        # EP-07 mira esto antes de elegir motor: sin render_v2 sigue usando /render.
+        "render_v2": True,
+        "render_v2_mapas": render_v2_activos.geo_disponible(),
+        "cpus": os.cpu_count(),
     })
 
 
@@ -660,6 +667,120 @@ def render():
         log.exception("Render failed")
         return jsonify({"success": False, "error": str(e)}), 500
 
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+# ── Render v2: estilo del piloto (plano cada ~3,4 s, material real, rotulos) ──
+
+@app.route("/render/v2", methods=["POST"])
+def render_v2_endpoint():
+    """
+    POST /render/v2
+    {
+      "narration_file_id": "DRIVE_ID",            # o "narration_url"
+      "script_text": "guion narrable, parrafos separados por linea en blanco",
+      "plan": {...}  o  "plan_url": "...",        # plan visual de Claude (EP-07)
+      "ia_images": [{"name": "ITEM_1_IMG_1", "file_id": "DRIVE_ID"}],   # reserva de EP-04
+      "alignment": {...} (opcional; si falta, Whisper + guion),
+      "music_plan": [...], "music_avoid": [...],
+      "airtable_id": "rec...", "output_filename": "VideoN_slug.mp4",
+      "drive_folder_id": "FOLDER", "google_credentials_json": "..."
+    }
+    La respuesta tiene las mismas claves que /render (download_token, duration_min,
+    images_count = numero de planos...) para que EP-07 no cambie aguas abajo.
+    """
+    data = request.get_json() or {}
+    script = data.get("script_text") or ""
+    plan = data.get("plan")
+    if not script.strip():
+        return jsonify({"success": False, "error": "script_text requerido en v2"}), 400
+    work = tempfile.mkdtemp(prefix="render_v2_")
+    try:
+        if plan is None and data.get("plan_url"):
+            p = os.path.join(work, "plan.json")
+            _download_url(data["plan_url"], p)
+            plan = json.load(open(p, encoding="utf-8"))
+        if isinstance(plan, str):
+            plan = json.loads(plan)
+        plan = plan or {}
+        drive = _get_drive_service(creds_override=data.get("google_credentials_json"))
+        narr_path = os.path.join(work, "narration.mp3")
+        if data.get("narration_file_id"):
+            _download_drive(drive, data["narration_file_id"], narr_path)
+        elif data.get("narration_url"):
+            _download_url(data["narration_url"], narr_path)
+        else:
+            return jsonify({"success": False, "error": "narration_file_id o narration_url requerido"}), 400
+        narr_dur = _probe_duration(narr_path)
+
+        # Tiempos por palabra del GUION (no de lo que oyo Whisper)
+        words, _ = _words_for_text_layer(narr_path, work, dict(data, script_text=script))
+
+        ia = {}
+        carpeta_ia = os.path.join(work, "ia")
+        os.makedirs(carpeta_ia, exist_ok=True)
+        for img in data.get("ia_images") or []:
+            nombre = re.sub(r"\.(jpe?g|png|webp)$", "", str(img.get("name") or ""), flags=re.I)
+            if not nombre or not img.get("file_id"):
+                continue
+            dst = os.path.join(carpeta_ia, nombre + ".img")
+            try:
+                _download_drive(drive, img["file_id"], dst)
+                ia[nombre] = dst
+            except Exception as e:
+                log.warning("v2: imagen IA %s no descargada (%s)", nombre, e)
+        log.info("v2: voz %.1fs, %d palabras, %d imagenes IA, plan con %d parrafos",
+                 narr_dur or 0, len(words), len(ia), len((plan or {}).get("parrafos") or []))
+
+        dynasty = (data.get("output_filename") or "video").removesuffix(".mp4")
+        out, informe = render_v2_orquestador.run(
+            script, words, plan, narr_path, narr_dur, ia, work, str(MUSIC_LIBRARY_DIR),
+            semilla=data.get("airtable_id") or dynasty, build=BUILD_VERSION,
+            music_avoid=data.get("music_avoid") or [], music_plan=data.get("music_plan"),
+            legacy=LEGACY_LIBRARY, riser=RISER_PATH)
+        duration_sec = _probe_duration(out)
+        audio_qc = audio_mix.measure_loudness(out, timeout=900) or {}
+        if narr_dur and duration_sec and abs(duration_sec - narr_dur) > 5:
+            raise RuntimeError(f"QC v2: video {duration_sec:.1f}s frente a voz {narr_dur:.1f}s")
+
+        out_name = f"{dynasty}_{int(time.time())}.mp4"
+        token = str(uuid.uuid4())
+        persistent = RENDERS_DIR / f"{token}.mp4"
+        shutil.move(out, str(persistent))
+        sello = sello_musica.leer_sello(str(persistent))
+        file_size = os.path.getsize(persistent)
+        drive_file_id = drive_webViewLink = None
+        folder_id = data.get("drive_folder_id")
+        if folder_id:
+            try:
+                from googleapiclient.http import MediaFileUpload
+                media = MediaFileUpload(str(persistent), mimetype="video/mp4", resumable=True, chunksize=10 * 1024 * 1024)
+                r = drive.files().create(body={"name": out_name, "parents": [folder_id]}, media_body=media,
+                                         fields="id,webViewLink").execute()
+                drive_file_id, drive_webViewLink = r.get("id"), r.get("webViewLink")
+                persistent.unlink()
+            except Exception as e:
+                log.error("v2: subida a Drive fallida (se queda para /download): %s", e)
+        return jsonify({
+            "success": True, "engine": "v2", "download_token": token,
+            "drive_file_id": drive_file_id, "drive_webViewLink": drive_webViewLink,
+            "filename": out_name, "duration_sec": duration_sec,
+            "duration_min": round(duration_sec / 60, 1) if duration_sec else None,
+            "narration_duration_sec": narr_dur,
+            "narration_duration_min": round(narr_dur / 60, 1) if narr_dur else None,
+            "size_bytes": file_size, "images_count": informe["planos"],
+            "seg_por_plano": informe["seg_por_plano"], "tipos_plano": informe["tipos"],
+            "commons_fotos": informe["commons_fotos"], "creditos_imagenes": informe["creditos"],
+            "music_tracks": informe["music_tracks"], "music_sello": sello, "music_engine": "v2-audio_mix",
+            "audio_qc": {"integrated_lufs": audio_qc.get("lufs"), "true_peak_dbtp": audio_qc.get("tp")},
+            "build_version": BUILD_VERSION,
+        })
+    except TextLayerError as e:
+        return jsonify({"success": False, "error": str(e), "error_type": "alignment"}), 400
+    except Exception as e:
+        log.exception("Render v2 failed")
+        return jsonify({"success": False, "error": str(e)}), 500
     finally:
         shutil.rmtree(work, ignore_errors=True)
 
@@ -1151,6 +1272,55 @@ def thumbnail_ep_route():
         return resp
     except Exception as e:
         log.exception("Miniatura EP")
+        return jsonify({"success": False, "error": str(e)}), 500
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
+
+
+@app.route("/thumbnail/v3", methods=["POST"])
+def thumbnail_v3_route():
+    """Miniatura v3 sin plantilla (estilo piloto). JSON:
+      fondo_b64 | fondo_url | fondo_drive_id   imagen principal (obligatoria)
+      fondo2_b64 | fondo2_url | fondo2_drive_id  segunda imagen (para "split" o "lupa")
+      linea1 (blanca), linea2 (amarilla): 3 palabras como mucho entre las dos
+      estilo: flecha | lupa | split | texto
+      foco: [x, y] en 0-1 (opcional; si falta se detecta)
+    Devuelve el PNG 1280x720 (como /thumbnail/ep) y las metricas en cabeceras X-*.
+    """
+    data = request.get_json(silent=True) or {}
+    workdir = Path(tempfile.mkdtemp(prefix="thumbv3_"))
+    try:
+        def bajar(pref, destino):
+            if data.get(pref + "_b64"):
+                crudo = data[pref + "_b64"]
+                if crudo.lstrip().startswith("data:"):
+                    crudo = crudo.split(",", 1)[1]
+                destino.write_bytes(base64.b64decode(crudo))
+            elif data.get(pref + "_drive_id"):
+                _download_drive(_get_drive_service(data.get("google_credentials_json")), data[pref + "_drive_id"], str(destino))
+            elif data.get(pref + "_url"):
+                _download_url(data[pref + "_url"], str(destino))
+            else:
+                return None
+            return str(destino)
+        fondo = bajar("fondo", workdir / "fondo.img")
+        if not fondo:
+            return jsonify({"success": False, "error": "hace falta fondo_b64, fondo_url o fondo_drive_id"}), 400
+        fondo2 = bajar("fondo2", workdir / "fondo2.img")
+        salida = workdir / "thumb.png"
+        foco = data.get("foco")
+        m = thumbnail_v3.componer(fondo, str(salida), data.get("linea1", ""), data.get("linea2", ""),
+                                  estilo=data.get("estilo", "flecha"), fondo2=fondo2,
+                                  foco=tuple(foco) if foco else None)
+        resp = send_file(io.BytesIO(salida.read_bytes()), mimetype="image/png", as_attachment=True,
+                         download_name="thumbnail.png")
+        resp.headers["X-Build-Version"] = BUILD_VERSION
+        resp.headers["X-Luma"] = str(m["luma"])
+        resp.headers["X-Letra-168px"] = str(m["letra_a_168px"])
+        resp.headers["X-Estilo"] = m["estilo"]
+        return resp
+    except Exception as e:
+        log.exception("Miniatura v3")
         return jsonify({"success": False, "error": str(e)}), 500
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
