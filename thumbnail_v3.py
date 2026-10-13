@@ -97,8 +97,21 @@ def _palabras(l1, l2):
     w1, w2 = (l1 or "").upper().split(), (l2 or "").upper().split()
     if not w2 and len(w1) >= 2:
         w1, w2 = w1[:-1], w1[-1:]
+    # Si sobran palabras, primero caen articulos y preposiciones (no cambian el sentido);
+    # solo despues se recorta, y siempre la linea blanca: la amarilla es el golpe.
+    vacias = {"EL", "LA", "LOS", "LAS", "UN", "UNA", "UNOS", "UNAS", "LO", "DE", "DEL", "EN", "A", "AL", "Y", "QUE", "POR", "CON"}
     while len(w1) + len(w2) > 3:
-        (w1 if len(w1) > len(w2) or not w2 else w2).pop()
+        quitada = False
+        for w in (w1, w2):
+            for i, x in enumerate(w):
+                if x in vacias and len(w) > 1:
+                    del w[i]
+                    quitada = True
+                    break
+            if quitada:
+                break
+        if not quitada:
+            (w1 if len(w1) > 1 or not w2 else w2).pop()
     return " ".join(w1), " ".join(w2)
 
 
