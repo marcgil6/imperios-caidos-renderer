@@ -1311,7 +1311,9 @@ def thumbnail_v3_route():
         foco = data.get("foco")
         m = thumbnail_v3.componer(fondo, str(salida), data.get("linea1", ""), data.get("linea2", ""),
                                   estilo=data.get("estilo", "flecha"), fondo2=fondo2,
-                                  foco=tuple(foco) if foco else None)
+                                  foco=tuple(foco) if foco else None,
+                                  foco2=tuple(data["foco2"]) if data.get("foco2") else None,
+                                  zoom2=float(data.get("zoom2") or 1.0))
         resp = send_file(io.BytesIO(salida.read_bytes()), mimetype="image/png", as_attachment=True,
                          download_name="thumbnail.png")
         resp.headers["X-Build-Version"] = BUILD_VERSION

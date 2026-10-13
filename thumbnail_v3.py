@@ -60,9 +60,15 @@ def realzar(im):
 
     La gamma levanta sombras y medios sin quemar las luces (subir el brillo lineal
     quemaba la piedra blanca de las fotos aereas)."""
-    im = ImageEnhance.Color(im).enhance(1.2)
+    # Realce adaptativo: una imagen ya viva (modelos buenos) casi no se toca; una apagada, si.
+    hsv = np.asarray(im.convert("HSV"), dtype=np.float32)
+    sat = hsv[..., 1].mean()
+    if sat < 90:
+        im = ImageEnhance.Color(im).enhance(1.2)
+    elif sat < 120:
+        im = ImageEnhance.Color(im).enhance(1.06)
     l0 = luma(im)
-    if l0 < 150:
+    if l0 < 150 and np.asarray(im.convert("L"), dtype=np.float32).std() < 55:
         im = ImageEnhance.Contrast(im).enhance(1.12)
     if luma(im) < LUMA_MIN + 5:
         a = np.asarray(im, dtype=np.float32) / 255.0
@@ -141,7 +147,7 @@ def _tamano(lineas, ancho_max, maximo=190, minimo=126):
     return minimo
 
 
-def componer(fondo, salida, linea1="", linea2="", estilo="flecha", fondo2=None, foco=None):
+def componer(fondo, salida, linea1="", linea2="", estilo="flecha", fondo2=None, foco=None, foco2=None, zoom2=1.0):
     """Devuelve un dict de metricas (luma, cuerpo de letra, foco, palabras)."""
     base = realzar(_cubrir(Image.open(fondo)))
     fx, fy = foco or foco_auto(base)
@@ -165,8 +171,13 @@ def componer(fondo, salida, linea1="", linea2="", estilo="flecha", fondo2=None, 
         fuente_lupa = realzar(_cubrir(Image.open(fondo2))) if fondo2 else base
         r = 250
         cx, cy = int(min(max(fx * W, r + 20), W - r - 20)), int(min(max(fy * H, r + 20), H - r - 20))
-        zx, zy = (fx * W, fy * H) if not fondo2 else (W / 2, H / 2)
-        zoom = 1.8 if not fondo2 else 1.0
+        # Sin fondo2, la lupa amplia el propio sujeto; con fondo2 REVELA otra imagen (lo oculto),
+        # centrada en foco2 y con zoom2 (1 = el circulo abarca la altura de la imagen).
+        if fondo2:
+            f2x, f2y = foco2 or (0.5, 0.5)
+            zx, zy, zoom = f2x * W, f2y * H, (2 * r / H) * zoom2
+        else:
+            zx, zy, zoom = fx * W, fy * H, 1.8
         bw, bh = 2 * r / zoom, 2 * r / zoom
         rec = fuente_lupa.transform((2 * r, 2 * r), Image.EXTENT, (zx - bw / 2, zy - bh / 2, zx + bw / 2, zy + bh / 2), Image.BICUBIC)
         m = Image.new("L", (2 * r, 2 * r), 0)
