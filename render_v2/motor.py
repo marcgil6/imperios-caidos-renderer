@@ -85,15 +85,28 @@ def gradar(fr, brillo=1.0):
     return fr
 
 
+@functools.lru_cache(maxsize=12)
+def preparada(clave, zmin, brillo=1.0):
+    """Imagen escalada al tamano justo que pide el encuadre mas cerrado del plano (1,15x la
+    salida) y ya gradada. Se hace UNA vez por plano: encuadrar desde 3.200 px con BICUBIC y
+    gradar cada fotograma costaba ~70 ms; asi el fotograma queda en ~15-20 ms con BILINEAR."""
+    src = imagen(clave)
+    escala = min(1.0, (1.15 * W) / (max(zmin, 0.05) * src.width))
+    if escala < 0.98:
+        src = src.resize((max(W, round(src.width * escala)), max(1, round(src.height * escala))), Image.LANCZOS)
+    return gradar(src, brillo)
+
+
 def render_img(sh, p):
-    src = imagen(sh["src"])
     m = sh["mov"]
+    zmin = round(min(m["z"]), 3)
+    src = preparada(sh["src"], zmin, sh.get("brillo", 1.0))
     e = ease(p)
     caja = encuadre(src, lerp(m["cx"][0], m["cx"][1], e), lerp(m["cy"][0], m["cy"][1], e),
                     lerp(m["z"][0], m["z"][1], e))
-    fr = src.transform((W, H), Image.EXTENT, caja, Image.BICUBIC)
+    fr = src.transform((W, H), Image.EXTENT, caja, Image.BILINEAR)
     sh["_caja"], sh["_size"] = caja, src.size      # para colocar marcas sobre la imagen
-    return gradar(fr, sh.get("brillo", 1.0))
+    return fr
 
 
 def render_scan(sh, p):
