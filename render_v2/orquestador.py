@@ -80,6 +80,6 @@ def run(script_text, palabras, plan, narracion, dur, ia, work, library_dir, semi
     salida = os.path.join(work, "final_v2.mp4")
     subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i", v, "-i", audio, "-map", "0:v", "-map", "1:a",
                     "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-shortest", "-movflags", "+faststart",
-                    *sello_musica.args_sello(estado, usadas, build), salida], check=True)
+                    *sello_musica.args_sello(estado, [u["id"] for u in usadas], build), salida], check=True)
     res.update(creditos=creditos, music_tracks=usadas, commons_fotos=len(commons.fichas))
     return salida, res

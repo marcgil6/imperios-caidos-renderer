@@ -24,7 +24,10 @@ def cama(work, library_dir, legacy, dur, plan=None, avoid=(), semilla=None, lufs
     segs = audio_mix.normalize_plan(plan or PLAN_DEFECTO, dur, 0.0)
     chosen = audio_mix.select_tracks(library, segs, avoid=list(avoid or []), seed=semilla)
     bed = audio_mix.build_bed(work, chosen, dur, lufs_cache)
-    return bed, [c["track"]["id"] for c in chosen]
+    # Mismo formato que /render (EP-07 escribe musica_usada con id, mood y tramo)
+    return bed, [{"id": c["track"]["id"], "title": c["track"].get("title"), "mood": c["mood"],
+                  "intensity": c["intensity"], "start": round(c["start"], 1), "end": round(c["end"], 1)}
+                 for c in chosen]
 
 
 def _leer(path):
