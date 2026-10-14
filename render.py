@@ -29,6 +29,7 @@ from render_v2 import orquestador as render_v2_orquestador
 from render_v2 import activos as render_v2_activos
 import sello_musica
 import thumbnail_ep
+import thumbnail_hibrida
 import thumbnail_v3
 import youtube_upload
 from text_layer import (TextLayerError, build_ass, build_video_filters,
@@ -50,7 +51,7 @@ log = logging.getLogger("render")
 # alineacion sin tocarlo, se redesplego, y /health seguia diciendo lo mismo:
 # no habia forma de saber que el arreglo no habia entrado hasta lanzar un
 # render de 23 minutos y verlo fallar igual.
-BUILD_VERSION = "2026-10-14-render-v2-rapido"
+BUILD_VERSION = "2026-10-14-miniatura-hibrida"
 
 
 def _parse_creds(raw):
@@ -286,6 +287,8 @@ def health():
         # EP-07 mira esto antes de elegir motor: sin render_v2 sigue usando /render.
         "render_v2": True,
         "render_v2_mapas": render_v2_activos.geo_disponible(),
+        # EP-08 v2 mira esto antes de pedir estilo "hibrida" a /thumbnail/v3.
+        "miniatura_hibrida": True,
         "cpus": os.cpu_count(),
     })
 
@@ -1283,8 +1286,10 @@ def thumbnail_v3_route():
       fondo_b64 | fondo_url | fondo_drive_id   imagen principal (obligatoria)
       fondo2_b64 | fondo2_url | fondo2_drive_id  segunda imagen (para "split" o "lupa")
       linea1 (blanca), linea2 (amarilla): 3 palabras como mucho entre las dos
-      estilo: flecha | lupa | split | texto
+      estilo: flecha | lupa | split | texto | hibrida
       foco: [x, y] en 0-1 (opcional; si falta se detecta)
+      hibrida (escena de cine + lupa al lado del heroe): lupa_c [x, y] en 0-1 y radio (opcionales;
+        si faltan, la lupa va donde tapa menos detalle); con fondo2 la lupa revela foco2/zoom2
     Devuelve el PNG 1280x720 (como /thumbnail/ep) y las metricas en cabeceras X-*.
     """
     data = request.get_json(silent=True) or {}
@@ -1309,11 +1314,20 @@ def thumbnail_v3_route():
         fondo2 = bajar("fondo2", workdir / "fondo2.img")
         salida = workdir / "thumb.png"
         foco = data.get("foco")
-        m = thumbnail_v3.componer(fondo, str(salida), data.get("linea1", ""), data.get("linea2", ""),
-                                  estilo=data.get("estilo", "flecha"), fondo2=fondo2,
-                                  foco=tuple(foco) if foco else None,
-                                  foco2=tuple(data["foco2"]) if data.get("foco2") else None,
-                                  zoom2=float(data.get("zoom2") or 1.0))
+        if data.get("estilo") == "hibrida":
+            m = thumbnail_hibrida.componer(
+                fondo, str(salida), data.get("linea1", ""), data.get("linea2", ""), fondo2=fondo2,
+                foco=tuple(foco) if foco else None,
+                foco2=tuple(data["foco2"]) if data.get("foco2") else None,
+                zoom2=float(data.get("zoom2") or 1.0),
+                lupa_c=tuple(data["lupa_c"]) if data.get("lupa_c") else None,
+                radio=int(data.get("radio") or thumbnail_hibrida.RADIO))
+        else:
+            m = thumbnail_v3.componer(fondo, str(salida), data.get("linea1", ""), data.get("linea2", ""),
+                                      estilo=data.get("estilo", "flecha"), fondo2=fondo2,
+                                      foco=tuple(foco) if foco else None,
+                                      foco2=tuple(data["foco2"]) if data.get("foco2") else None,
+                                      zoom2=float(data.get("zoom2") or 1.0))
         resp = send_file(io.BytesIO(salida.read_bytes()), mimetype="image/png", as_attachment=True,
                          download_name="thumbnail.png")
         resp.headers["X-Build-Version"] = BUILD_VERSION
