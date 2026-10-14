@@ -1,13 +1,13 @@
-"""Modo de rotación de audio_mix (14/10/2026): con una biblioteca de un solo mood, las
-pistas se alternan ENTERAS, en orden fijo, hasta cubrir el vídeo.
+"""Modo de rotación de audio_mix (14/10/2026, orden de Marc): con una biblioteca de un solo
+mood, cada vídeo lleva UNA sola pista y los vídeos se van alternando entre las tres.
 
 Lo que se protege:
-1. Nunca suena la misma pista en dos tramos seguidos (la queja era que no encajaba;
-   con 3 pistas, repetir seguido se nota en seguida).
-2. Cubre el vídeo entero, sin huecos ni solapes.
-3. Cada pista suena casi entera (no se recorta a los tramos del plan musical).
-4. El vídeo no arranca con la misma pista que el anterior.
-5. Con la misma semilla, el mismo resultado (un re-render suena igual).
+1. Dentro de un vídeo no cambia la música: un único tramo que cubre todo el vídeo.
+2. Cada vídeo usa la siguiente pista a la del vídeo anterior (01 -> 02 -> 03 -> 01).
+3. El historial de EP-07 (`music_avoid`, lo más reciente primero) puede traer pistas ya
+   retiradas: se saltan y cuenta la primera que siga en la biblioteca.
+4. Sin historial útil decide la semilla, y con la misma semilla sale lo mismo
+   (un re-render suena igual).
 """
 import os
 import sys
@@ -27,49 +27,42 @@ PLAN = [{"start": 0.0, "end": 300.0, "mood": "tension", "intensity": "high"},
         {"start": 900.0, "end": 1380.0, "mood": "discovery", "intensity": "medium"}]
 
 
+def elegir(avoid=None, semilla="recABC"):
+    return am.select_tracks(PISTAS, PLAN, avoid=avoid or [], seed=semilla)
+
+
 class TestRotacion(unittest.TestCase):
-    def elegir(self, semilla="recABC", avoid=None):
-        return am.select_tracks(PISTAS, PLAN, avoid=avoid or [], seed=semilla)
+    def test_una_sola_pista_por_video(self):
+        out = elegir()
+        self.assertEqual(len(out), 1)
+        self.assertEqual((out[0]["start"], out[0]["end"]), (0.0, 1380.0))
 
-    def test_nunca_repite_seguida(self):
-        for semilla in ("recA", "recB", "recC", "recD", "recE", "recF"):
-            out = self.elegir(semilla)
-            ids = [s["track"]["id"] for s in out]
-            self.assertTrue(all(a != b for a, b in zip(ids, ids[1:])), ids)
+    def test_sigue_a_la_del_video_anterior(self):
+        for anterior, siguiente in (("mystery_medium_01", "mystery_medium_02"),
+                                    ("mystery_medium_02", "mystery_medium_03"),
+                                    ("mystery_medium_03", "mystery_medium_01")):
+            self.assertEqual(elegir([anterior, "mystery_medium_01"])[0]["track"]["id"], siguiente)
 
-    def test_cubre_todo_sin_huecos(self):
-        out = self.elegir()
-        self.assertEqual(out[0]["start"], 0.0)
-        self.assertEqual(out[-1]["end"], 1380.0)
-        for a, b in zip(out, out[1:]):
-            self.assertAlmostEqual(a["end"], b["start"])
+    def test_salta_pistas_retiradas_del_historial(self):
+        out = elegir(["tension_medium_02", "ancient_low_01", "mystery_medium_02"])
+        self.assertEqual(out[0]["track"]["id"], "mystery_medium_03")
 
-    def test_cada_pista_casi_entera(self):
-        out = self.elegir()
-        for s in out[:-1]:
-            dur = s["track"]["duration"]
-            self.assertGreaterEqual(s["end"] - s["start"], dur - am.BED_XFADE - 1.5)
-            self.assertLessEqual(s["end"] - s["start"], dur)
+    def test_tres_videos_seguidos_usan_las_tres(self):
+        historial, usadas = [], []
+        for n in range(6):
+            tid = elegir(historial, semilla=f"rec{n}")[0]["track"]["id"]
+            usadas.append(tid)
+            historial = [tid] + historial
+        self.assertEqual(len(set(usadas[:3])), 3)
+        self.assertTrue(all(a != b for a, b in zip(usadas, usadas[1:])))
 
-    def test_no_arranca_como_el_anterior(self):
-        for semilla in ("recA", "recB", "recC", "recD", "recE", "recF"):
-            primera = self.elegir(semilla)[0]["track"]["id"]
-            otra = self.elegir(semilla, avoid=[primera])[0]["track"]["id"]
-            self.assertNotEqual(primera, otra)
-
-    def test_determinista(self):
-        a = [s["track"]["id"] for s in self.elegir("recXYZ")]
-        b = [s["track"]["id"] for s in self.elegir("recXYZ")]
-        self.assertEqual(a, b)
-
-    def test_intensidad_sale_del_plan(self):
-        out = self.elegir()
-        self.assertEqual(out[0]["intensity"], "high")      # empieza en el tramo 0-300 del plan
+    def test_sin_historial_decide_la_semilla(self):
+        self.assertEqual(elegir([], "recXYZ")[0]["track"]["id"], elegir([], "recXYZ")[0]["track"]["id"])
+        self.assertEqual(len({elegir([], f"rec{i}")[0]["track"]["id"] for i in range(20)}), 3)
 
     def test_varios_moods_sigue_el_modo_por_plan(self):
         mezcla = PISTAS + [{"id": "tension_low_01", "path": "/x/t.mp3", "mood": "tension", "intensity": "low", "duration": 200}]
-        out = am.select_tracks(mezcla, PLAN, avoid=[], seed="recA")
-        self.assertEqual(len(out), len(PLAN))              # un tramo por tramo del plan, como antes
+        self.assertEqual(len(am.select_tracks(mezcla, PLAN, avoid=[], seed="recA")), len(PLAN))
 
 
 if __name__ == "__main__":

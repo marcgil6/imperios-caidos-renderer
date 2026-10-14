@@ -299,41 +299,22 @@ def select_tracks(tracks, segments, avoid=None, seed=None):
 
 def _rotation(tracks, segments, avoid, rng):
     """Biblioteca de un solo mood (14/10/2026, Marc eligió 3 pistas de misterio
-    suave): las pistas se ALTERNAN enteras, en orden fijo, hasta cubrir el vídeo.
+    suave): UNA pista para todo el vídeo, y cada vídeo usa la SIGUIENTE a la del
+    anterior (01 -> 02 -> 03 -> 01...). Orden de Marc: no cambiar de música dentro
+    de un vídeo, alternar entre vídeos.
 
-    El plan musical ya no decide qué pista suena (todas son del mismo carácter);
-    solo aporta la intensidad del tramo en el que empieza cada pista. Reciclar
-    una pista dentro de su tramo, como hace el modo por moods, haría sonar la
-    misma pieza dos veces seguidas, que es justo lo que se quiere evitar.
+    `avoid` llega de EP-07 con las pistas de los últimos vídeos, la más reciente
+    primero; la primera que esté en la biblioteca es la del vídeo anterior. Sin
+    historial útil (primer vídeo, o solo pistas retiradas) decide la semilla.
+    Si la pista es más corta que el vídeo, `_render_segment` la recicla con
+    crossfade.
     """
     order = sorted(tracks, key=lambda t: t["id"])
-    n = len(order)
-    start = rng.randrange(n)
-    # Que el vídeo no arranque con la misma pista con la que arrancó el
-    # anterior (`avoid` llega con lo más reciente primero).
-    if n > 1 and avoid and order[start]["id"] == avoid[0]:
-        start = (start + 1) % n
-    t0, total = segments[0]["start"], segments[-1]["end"]
-
-    def intensity_at(t):
-        for s in segments:
-            if s["start"] <= t < s["end"]:
-                return s["intensity"]
-        return segments[-1]["intensity"]
-
-    out, i = [], 0
-    while total - t0 > 1.0:
-        tr = order[(start + i) % n]
-        dur = float(tr.get("duration") or probe_duration(tr["path"]) or 180.0)
-        # Cada pista suena casi entera: se corta justo antes de su final para
-        # que el crossfade con la siguiente caiga sobre música, no sobre la cola.
-        end = min(total, t0 + max(dur - BED_XFADE - 1.0, MIN_SEGMENT))
-        if total - end < MIN_SEGMENT:
-            end = total               # una cola de pocos segundos no merece pista nueva
-        out.append({"start": t0, "end": end, "mood": tr["mood"],
-                    "intensity": intensity_at(t0), "track": tr})
-        t0, i = end, i + 1
-    return out
+    ids = [t["id"] for t in order]
+    anterior = next((tid for tid in (avoid or []) if tid in ids), None)
+    i = (ids.index(anterior) + 1) % len(order) if anterior else rng.randrange(len(order))
+    return [{"start": segments[0]["start"], "end": segments[-1]["end"],
+             "mood": order[i]["mood"], "intensity": "medium", "track": order[i]}]
 
 
 # ── Cama sonora ────────────────────────────────────────────

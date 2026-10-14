@@ -9,10 +9,12 @@ batería, guitarras ni títulos o artistas étnicos). Las 24 pistas anteriores s
 retiraron: la biblioteca se había llenado por cuotas de mood y colaba música
 étnica ("rollo India"), jazz, folk e hip-hop.
 
-Todas son del mood `mystery`, así que `audio_mix` entra en **modo rotación**:
-suenan enteras, alternándose en orden fijo (01 → 02 → 03), sin repetir la misma
-dos tramos seguidos y sin arrancar como el vídeo anterior. Para volver al modo
-por moods basta con añadir pistas de otro mood.
+Todas son del mood `mystery`, así que `audio_mix` entra en **modo rotación**
+(orden de Marc): **una sola pista por vídeo**, sin cambiar de música dentro del
+vídeo, y cada vídeo usa la siguiente a la del anterior (01 → 02 → 03 → 01…),
+leyendo el historial `music_avoid` de EP-07. Si la pista es más corta que el
+vídeo se recicla con crossfade. Para volver al modo por moods basta con añadir
+pistas de otro mood.
 
 ## Candado de licencia (desde el 25/09/2026)
 
