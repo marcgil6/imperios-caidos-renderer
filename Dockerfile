@@ -30,7 +30,7 @@ RUN mkdir -p /usr/share/fonts/truetype/ep \
     && fc-cache -f
 COPY branding/ ./branding/
 COPY sfx/ ./sfx/
-RUN ls -la /app/music/library/ && test "$(ls /app/music/library/*.mp3 | wc -l)" -ge 8
+RUN ls -la /app/music/library/ && test "$(ls /app/music/library/*.mp3 | wc -l)" -ge 3
 # Candado de licencia: TODAS las pistas de la carpeta tienen que estar
 # certificadas en library.json (Biblioteca de audio de YouTube, sin atribucion,
 # sha256 igual). Un mp3 sin certificar no sonaria, pero es un error: rompe el build.

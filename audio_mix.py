@@ -165,6 +165,7 @@ def load_library(library_dir, legacy_tracks=None):
                 "source": m.get("source", "biblioteca del canal"),
                 "attribution": m.get("attribution"),
                 "lufs": m.get("lufs"),
+                "duration": m.get("duration"),
             })
 
     if not tracks and legacy_tracks:
@@ -243,6 +244,8 @@ def select_tracks(tracks, segments, avoid=None, seed=None):
     if not tracks:
         raise AudioMixError("biblioteca musical vacía")
     rng = random.Random(seed)
+    if len({t["mood"] for t in tracks}) == 1 and segments:
+        return _rotation(tracks, segments, avoid, rng)
     used = []
 
     # El veto por historial se recorta POR MOOD. Si de un mood solo hay tres
@@ -291,6 +294,45 @@ def select_tracks(tracks, segments, avoid=None, seed=None):
         t = pick(s["mood"], s["intensity"])
         used.append(t["id"])
         out.append(dict(s, track=t))
+    return out
+
+
+def _rotation(tracks, segments, avoid, rng):
+    """Biblioteca de un solo mood (14/10/2026, Marc eligió 3 pistas de misterio
+    suave): las pistas se ALTERNAN enteras, en orden fijo, hasta cubrir el vídeo.
+
+    El plan musical ya no decide qué pista suena (todas son del mismo carácter);
+    solo aporta la intensidad del tramo en el que empieza cada pista. Reciclar
+    una pista dentro de su tramo, como hace el modo por moods, haría sonar la
+    misma pieza dos veces seguidas, que es justo lo que se quiere evitar.
+    """
+    order = sorted(tracks, key=lambda t: t["id"])
+    n = len(order)
+    start = rng.randrange(n)
+    # Que el vídeo no arranque con la misma pista con la que arrancó el
+    # anterior (`avoid` llega con lo más reciente primero).
+    if n > 1 and avoid and order[start]["id"] == avoid[0]:
+        start = (start + 1) % n
+    t0, total = segments[0]["start"], segments[-1]["end"]
+
+    def intensity_at(t):
+        for s in segments:
+            if s["start"] <= t < s["end"]:
+                return s["intensity"]
+        return segments[-1]["intensity"]
+
+    out, i = [], 0
+    while total - t0 > 1.0:
+        tr = order[(start + i) % n]
+        dur = float(tr.get("duration") or probe_duration(tr["path"]) or 180.0)
+        # Cada pista suena casi entera: se corta justo antes de su final para
+        # que el crossfade con la siguiente caiga sobre música, no sobre la cola.
+        end = min(total, t0 + max(dur - BED_XFADE - 1.0, MIN_SEGMENT))
+        if total - end < MIN_SEGMENT:
+            end = total               # una cola de pocos segundos no merece pista nueva
+        out.append({"start": t0, "end": end, "mood": tr["mood"],
+                    "intensity": intensity_at(t0), "track": tr})
+        t0, i = end, i + 1
     return out
 
 

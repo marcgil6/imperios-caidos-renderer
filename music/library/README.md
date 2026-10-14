@@ -1,13 +1,18 @@
 # Biblioteca musical del canal
 
-**Estado (2026-08-28): LLENA — 24 pistas, 3 por mood.** Todas salen de la
-Biblioteca de audio de YouTube con el filtro **"No requiere atribucion"**
-(licencia YouTube, sin Content ID), descargadas el 28/08/2026 y
-recodificadas a MP3 192 kbps 44,1 kHz estereo. `library.json` lleva titulo,
-artista, duracion y el LUFS ya medido de cada una (ahorra una medicion por
-render). Las tres pistas de Scott Buckley se retiraron del repo en el mismo
-commit: su Smart Content ID reclamaba los videos aunque el credito
-estuviera puesto.
+**Estado (2026-10-14): 3 pistas elegidas por Marc, en rotación.** Red Shift
+(The Grey Room / Density & Time), Faultlines (Asher Fulero) y AETHER (Density &
+Time), las tres de la Biblioteca de audio de YouTube con licencia **"No requiere
+atribucion"**. Salieron de escuchar 54 candidatas filtradas del catálogo entero
+(cinematográfica/ambiental/clásica, ánimo oscuro/tranquilo/dramático/triste, sin
+batería, guitarras ni títulos o artistas étnicos). Las 24 pistas anteriores se
+retiraron: la biblioteca se había llenado por cuotas de mood y colaba música
+étnica ("rollo India"), jazz, folk e hip-hop.
+
+Todas son del mood `mystery`, así que `audio_mix` entra en **modo rotación**:
+suenan enteras, alternándose en orden fijo (01 → 02 → 03), sin repetir la misma
+dos tramos seguidos y sin arrancar como el vídeo anterior. Para volver al modo
+por moods basta con añadir pistas de otro mood.
 
 ## Candado de licencia (desde el 25/09/2026)
 
