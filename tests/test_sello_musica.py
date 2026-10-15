@@ -38,12 +38,14 @@ def _mp4(path, metadata=()):
 
 
 class TestBibliotecaReal(unittest.TestCase):
-    def test_las_24_pistas_estan_certificadas(self):
+    def test_todas_las_pistas_estan_certificadas(self):
         # Si alguien toca un mp3 o el manifiesto sin actualizar el otro, el
         # render se quedaria sin esa pista: mejor enterarse aqui.
         manifiesto = sello_musica.cargar_manifiesto(LIBRERIA)
         mp3 = [f for f in os.listdir(LIBRERIA) if f.endswith(".mp3")]
-        self.assertEqual(len(mp3), 24)
+        # Desde el 14/10/2026 son 3 (las que eligio Marc); el Dockerfile exige >= 3.
+        self.assertGreaterEqual(len(mp3), 3)
+        self.assertEqual(sorted(mp3), sorted(manifiesto))
         for f in mp3:
             self.assertIsNone(
                 sello_musica.motivo_rechazo(os.path.join(LIBRERIA, f), manifiesto), f)
@@ -60,10 +62,10 @@ class TestCandadoEntrada(unittest.TestCase):
     def setUp(self):
         self.dir = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, self.dir)
-        origen = os.path.join(LIBRERIA, "mystery_low_01.mp3")
-        shutil.copy(origen, os.path.join(self.dir, "mystery_low_01.mp3"))
+        origen = os.path.join(LIBRERIA, "mystery_medium_01.mp3")
+        shutil.copy(origen, os.path.join(self.dir, "mystery_medium_01.mp3"))
         manifiesto = sello_musica.cargar_manifiesto(LIBRERIA)
-        self.entrada = dict(manifiesto["mystery_low_01.mp3"])
+        self.entrada = dict(manifiesto["mystery_medium_01.mp3"])
 
     def _escribir(self, *entradas):
         with open(os.path.join(self.dir, "library.json"), "w") as fh:
@@ -72,16 +74,16 @@ class TestCandadoEntrada(unittest.TestCase):
     def test_pista_certificada_entra(self):
         self._escribir(self.entrada)
         self.assertEqual([t["id"] for t in audio_mix.load_library(self.dir)],
-                         ["mystery_low_01"])
+                         ["mystery_medium_01"])
 
     def test_mp3_copiado_sin_manifiesto_no_entra(self):
         # El caso Scott Buckley: un mp3 con nombre de mood valido que nadie
         # ha certificado.
         self._escribir(self.entrada)
-        shutil.copy(os.path.join(self.dir, "mystery_low_01.mp3"),
+        shutil.copy(os.path.join(self.dir, "mystery_medium_01.mp3"),
                     os.path.join(self.dir, "tension_medium_09.mp3"))
         ids = [t["id"] for t in audio_mix.load_library(self.dir)]
-        self.assertEqual(ids, ["mystery_low_01"])
+        self.assertEqual(ids, ["mystery_medium_01"])
 
     def test_licencia_con_atribucion_no_entra(self):
         self.entrada["attribution"] = "Music by Scott Buckley - CC BY 4.0"
@@ -96,7 +98,7 @@ class TestCandadoEntrada(unittest.TestCase):
     def test_fichero_cambiado_no_entra(self):
         # Mismo nombre, otro contenido: el sha256 lo caza.
         self._escribir(self.entrada)
-        with open(os.path.join(self.dir, "mystery_low_01.mp3"), "ab") as fh:
+        with open(os.path.join(self.dir, "mystery_medium_01.mp3"), "ab") as fh:
             fh.write(b"otra cancion")
         self.assertEqual(audio_mix.load_library(self.dir), [])
 
@@ -106,7 +108,7 @@ class TestCandadoEntrada(unittest.TestCase):
     def test_reserva_heredada_tambien_pasa_el_candado(self):
         self._escribir()
         falsa = os.path.join(self.dir, "uprising.mp3")
-        shutil.copy(os.path.join(self.dir, "mystery_low_01.mp3"), falsa)
+        shutil.copy(os.path.join(self.dir, "mystery_medium_01.mp3"), falsa)
         self.assertEqual(audio_mix.load_library(
             self.dir, [{"id": "uprising", "path": falsa, "mood": "tension"}]), [])
 
@@ -120,10 +122,10 @@ class TestCandadoSalida(unittest.TestCase):
     def test_sello_ida_y_vuelta(self):
         p = os.path.join(self.dir, "ok.mp4")
         _mp4(p, sello_musica.args_sello(sello_musica.MUSICA_LIBRE,
-                                        ["mystery_low_01", "dark_low_01"], "b1"))
+                                        ["mystery_medium_01", "dark_low_01"], "b1"))
         sello = sello_musica.exigir_sello(p)
         self.assertEqual(sello["ep-music"], "yt-audio-library")
-        self.assertEqual(sello["tracks"], "mystery_low_01,dark_low_01")
+        self.assertEqual(sello["tracks"], "mystery_medium_01,dark_low_01")
 
     def test_narracion_sola_vale(self):
         p = os.path.join(self.dir, "voz.mp4")
@@ -159,8 +161,8 @@ class TestCandadoSalida(unittest.TestCase):
                         "-i", "sine=f=220:d=1", voz], check=True)
         out = os.path.join(self.dir, "out.mp4")
         audio_mix.mix_final(v, voz, voz, out, metadata=sello_musica.args_sello(
-            sello_musica.MUSICA_LIBRE, ["mystery_low_01"]))
-        self.assertEqual(sello_musica.exigir_sello(out)["tracks"], "mystery_low_01")
+            sello_musica.MUSICA_LIBRE, ["mystery_medium_01"]))
+        self.assertEqual(sello_musica.exigir_sello(out)["tracks"], "mystery_medium_01")
 
 
 if __name__ == "__main__":

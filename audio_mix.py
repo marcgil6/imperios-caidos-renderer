@@ -165,6 +165,7 @@ def load_library(library_dir, legacy_tracks=None):
                 "source": m.get("source", "biblioteca del canal"),
                 "attribution": m.get("attribution"),
                 "lufs": m.get("lufs"),
+                "duration": m.get("duration"),
             })
 
     if not tracks and legacy_tracks:
@@ -243,6 +244,8 @@ def select_tracks(tracks, segments, avoid=None, seed=None):
     if not tracks:
         raise AudioMixError("biblioteca musical vacía")
     rng = random.Random(seed)
+    if len({t["mood"] for t in tracks}) == 1 and segments:
+        return _rotation(tracks, segments, avoid, rng)
     used = []
 
     # El veto por historial se recorta POR MOOD. Si de un mood solo hay tres
@@ -292,6 +295,26 @@ def select_tracks(tracks, segments, avoid=None, seed=None):
         used.append(t["id"])
         out.append(dict(s, track=t))
     return out
+
+
+def _rotation(tracks, segments, avoid, rng):
+    """Biblioteca de un solo mood (14/10/2026, Marc eligió 3 pistas de misterio
+    suave): UNA pista para todo el vídeo, y cada vídeo usa la SIGUIENTE a la del
+    anterior (01 -> 02 -> 03 -> 01...). Orden de Marc: no cambiar de música dentro
+    de un vídeo, alternar entre vídeos.
+
+    `avoid` llega de EP-07 con las pistas de los últimos vídeos, la más reciente
+    primero; la primera que esté en la biblioteca es la del vídeo anterior. Sin
+    historial útil (primer vídeo, o solo pistas retiradas) decide la semilla.
+    Si la pista es más corta que el vídeo, `_render_segment` la recicla con
+    crossfade.
+    """
+    order = sorted(tracks, key=lambda t: t["id"])
+    ids = [t["id"] for t in order]
+    anterior = next((tid for tid in (avoid or []) if tid in ids), None)
+    i = (ids.index(anterior) + 1) % len(order) if anterior else rng.randrange(len(order))
+    return [{"start": segments[0]["start"], "end": segments[-1]["end"],
+             "mood": order[i]["mood"], "intensity": "medium", "track": order[i]}]
 
 
 # ── Cama sonora ────────────────────────────────────────────

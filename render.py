@@ -51,7 +51,7 @@ log = logging.getLogger("render")
 # alineacion sin tocarlo, se redesplego, y /health seguia diciendo lo mismo:
 # no habia forma de saber que el arreglo no habia entrado hasta lanzar un
 # render de 23 minutos y verlo fallar igual.
-BUILD_VERSION = "2026-10-14-miniatura-hibrida"
+BUILD_VERSION = "2026-10-14-musica-documental"
 
 
 def _parse_creds(raw):
@@ -159,25 +159,25 @@ MUSIC_LIBRARY_DIR = MUSIC_DIR / "library"
 # Las claves se conservan porque el payload de EP-07 puede traer
 # `audio.music_track`; ahora apuntan a pistas de la biblioteca.
 MUSIC = {
-    "uprising": MUSIC_LIBRARY_DIR / "tension_medium_02.mp3",
-    "the_long_dark": MUSIC_LIBRARY_DIR / "dark_low_01.mp3",
-    "end": MUSIC_LIBRARY_DIR / "emotional_low_01.mp3",
+    "uprising": MUSIC_LIBRARY_DIR / "mystery_medium_01.mp3",
+    "the_long_dark": MUSIC_LIBRARY_DIR / "mystery_medium_03.mp3",
+    "end": MUSIC_LIBRARY_DIR / "mystery_medium_02.mp3",
 }
 
 # Red de seguridad si music/library/ llegara vacia (imagen mal construida).
+# Desde el 14/10/2026 la biblioteca son solo las 3 pistas que eligio Marc.
 LEGACY_LIBRARY = [
-    {"id": "tension_medium_02", "path": str(MUSIC["uprising"]),
-     "mood": "tension", "intensity": "medium", "title": "Standoff",
-     "lufs": -12.19, "source": "YouTube Audio Library",
+    {"id": "mystery_medium_01", "path": str(MUSIC["uprising"]),
+     "mood": "mystery", "intensity": "medium", "title": "Red Shift",
+     "lufs": -12.9, "duration": 240.7, "source": "YouTube Audio Library",
      "attribution": None},
-    {"id": "dark_low_01", "path": str(MUSIC["the_long_dark"]),
-     "mood": "dark", "intensity": "low", "title": "Surface of the Moon",
-     "lufs": -16.29, "source": "YouTube Audio Library",
+    {"id": "mystery_medium_02", "path": str(MUSIC["end"]),
+     "mood": "mystery", "intensity": "medium", "title": "Faultlines",
+     "lufs": -12.2, "duration": 144.5, "source": "YouTube Audio Library",
      "attribution": None},
-    {"id": "emotional_low_01", "path": str(MUSIC["end"]),
-     "mood": "emotional", "intensity": "low",
-     "title": "Things I Could Have Said",
-     "lufs": -11.84, "source": "YouTube Audio Library",
+    {"id": "mystery_medium_03", "path": str(MUSIC["the_long_dark"]),
+     "mood": "mystery", "intensity": "medium", "title": "AETHER",
+     "lufs": -15.0, "duration": 527.0, "source": "YouTube Audio Library",
      "attribution": None},
 ]
 _MUSIC_LUFS_CACHE = {}
